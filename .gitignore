@@ -205,3 +205,33 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Thesis-specific
+# Datasets - too large for git
+data/realiad/
+data/mvtec/
+data/mvtec_ad_2/
+datasets/
+
+# Model weights and checkpoints
+*.pth
+*.ckpt
+*.pt
+weights/
+checkpoints/
+results/weights/
+
+# Anomalib outputs
+anomalib_results/
+lightning_logs/
+wandb/
+
+# Large result files
+results/*.csv
+results/*.json
+
+# Anomaly map images (generated, not source)
+results/anomaly_maps/
+
+# VS Code settings (optional - remove # if you want to ignore)
+# .vscode/
