@@ -1,2 +1,3 @@
 # BachelorsThesis
-Code repository for AL-pipelines I am building for my bachelors thesis
+
+Benchmark Comparison between the three Anomaly Detection Models INP-Former, Dinomaly and AnomalyDino
