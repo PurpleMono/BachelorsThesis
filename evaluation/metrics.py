@@ -2,7 +2,7 @@ import torch
 import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
-from anomalib.metrics import AUPRO
+from skimage import measure
 from typing import Optional
 
 
@@ -93,28 +93,64 @@ def compute_p_auroc(df: pd.DataFrame) -> float:
     return roc_auc_score(all_labels, all_scores)
 
 
-def compute_aupro(df: pd.DataFrame) -> float:
+def compute_aupro(df: pd.DataFrame, num_thresh: int = 100) -> float:
     """
     Area Under Per-Region Overlap.
-    Each defect region is weighted equally regardless of size.
-    Fairer than P-AUROC for Real-IAD which has very small defects (0.01%-6.75%).
-    Uses Anomalib's AUPRO implementation.
-    Requires columns: pixel_scores, pixel_labels, has_mask
+    Each defect region weighted equally regardless of size.
+    Fairer than P-AUROC for datasets with very small defects like Real-IAD.
+    Custom implementation using skimage connected components.
+    Only computed on images where GT mask exists (has_mask=True).
+    Requires columns: pixel_scores_2d, pixel_labels_2d, has_mask
+    Note: expects 2D arrays (H x W), not flattened 1D arrays.
     """
-    df_masked = df[df['has_mask'] == True]
 
+    df_masked = df[df['has_mask'] == True]
     if df_masked.empty:
         return float('nan')
 
-    aupro_metric = AUPRO()
+    all_scores = np.concatenate([r.flatten() 
+                                  for r in df_masked['pixel_scores_2d'].values])
+    thresholds = np.linspace(all_scores.min(), all_scores.max(), num_thresh)
 
-    for _, row in df_masked.iterrows():
-        # Convert flat arrays to 2D tensors for AUPRO computation
-        scores = torch.tensor(row['pixel_scores']).unsqueeze(0)
-        labels = torch.tensor(row['pixel_labels']).unsqueeze(0)
-        aupro_metric.update(scores, labels)
+    fprs, pros = [], []
 
-    return aupro_metric.compute().item()
+    for thresh in thresholds:
+        region_pros = []
+        all_gt, all_pred = [], []
+
+        for _, row in df_masked.iterrows():
+            gt = row['pixel_labels_2d'].astype(int)    # H x W
+            scores = row['pixel_scores_2d']             # H x W
+            pred = (scores >= thresh).astype(int)       # H x W
+
+            all_gt.append(gt.flatten())
+            all_pred.append(pred.flatten())
+
+            # Find connected regions in GT mask
+            labeled = measure.label(gt)
+            for region_id in range(1, labeled.max() + 1):
+                region_mask = (labeled == region_id)
+                overlap = pred[region_mask].sum() / (region_mask.sum() + 1e-8)
+                region_pros.append(float(overlap))
+
+        # FPR across all pixels at this threshold
+        gt_flat = np.concatenate(all_gt)
+        pred_flat = np.concatenate(all_pred)
+        tn = ((pred_flat == 0) & (gt_flat == 0)).sum()
+        fp = ((pred_flat == 1) & (gt_flat == 0)).sum()
+        fpr = fp / (fp + tn + 1e-8)
+
+        fprs.append(fpr)
+        pros.append(np.mean(region_pros) if region_pros else 0.0)
+
+    # Integrate PRO over FPR up to 0.3 (standard cutoff)
+    fprs = np.array(fprs)
+    pros = np.array(pros)
+    valid = fprs <= 0.3
+    if valid.sum() < 2:
+        return float('nan')
+
+    return float(np.trapezoid(pros[valid], fprs[valid]) / 0.3)
 
 
 # =============================================================================
@@ -246,7 +282,9 @@ if __name__ == '__main__':
         'has_mask':    np.random.choice([True, False], n),
         # Synthetic pixel scores — normally added during inference
         'pixel_scores': [np.random.rand(100) for _ in range(n)],
-        'pixel_labels': [np.random.randint(0, 2, 100) for _ in range(n)]
+        'pixel_labels': [np.random.randint(0, 2, 100) for _ in range(n)],
+        'pixel_scores_2d': [np.random.rand(10, 10) for _ in range(n)],
+        'pixel_labels_2d': [np.random.randint(0, 2, (10, 10)) for _ in range(n)]
     })
 
     print("Testing compute_i_auroc:")
