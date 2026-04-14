@@ -235,3 +235,6 @@ results/anomaly_maps/
 
 # VS Code settings (optional - remove # if you want to ignore)
 # .vscode/
+
+models/inp_former/saved_results/
+models/inp_former/__pycache__/
