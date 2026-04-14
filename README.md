@@ -57,6 +57,17 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## Dataset Setup
+
+This project uses the Real-IAD dataset (512px version) from Hugging Face.
+The dataset is publicly available — no account required.
+
+Dataset link: https://huggingface.co/datasets/Real-IAD/Real-IAD
+
+When running experiment notebooks the dataset will be downloaded automatically
+via the Hugging Face datasets library.
+
+
 ## Hardware
 
 All experiments run on Google Colab for hardware-consistent comparisons. GPU tier subject to change based on computational requirements.
