@@ -15,15 +15,13 @@ from typing import Optional
 REALIAD_CONFIG = {
     'name': 'realiad',
     'has_sample_id': True,   # enables S-AUROC
-    'has_gt_labels': True,   # enables GT-I-AUROC and GT-WGA
     'has_viewpoints': True,  # enables viewpoint dimension in WGA
 }
 
 MVTEC_CONFIG = {
     'name': 'mvtec',
-    'has_sample_id': False,  # no multi-view samples
-    'has_gt_labels': False,  # every NG image has a visible defect
-    'has_viewpoints': False, # no viewpoint dimension
+    'has_sample_id': False,
+    'has_viewpoints': False,
 }
 
 
@@ -122,22 +120,23 @@ def compute_degradation_ratio(
 def compute_wga(
     df: pd.DataFrame,
     group_cols: list = ['category', 'viewpoint', 'defect_type'],
-    use_gt_labels: bool = True
+    score_col: str = 'image_score',
+    label_col: str = 'label'  # ← change default here
 ) -> pd.DataFrame:
     """
     Worst-Group Analysis across specified dimensions.
-    Uses GT-based labels by default to avoid dataset labeling artifacts
-    (i.e. penalising models for views where defect is physically invisible).
+    Returns AUROC per group sorted ascending (worst group first).
+    
 
     Args:
         df:            results dataframe with model scores
         group_cols:    dimensions to group by
-        use_gt_labels: if True uses label_gt, else uses label
+        score_col:    column name for model scores
+        label_col:    column name for binary labels to compute AUROC                                       
 
     Returns:
         DataFrame with AUROC per group, sorted ascending (worst group first)
     """
-    label_col = 'label_gt' if use_gt_labels else 'label'
     results = []
 
     for group_vals, group_df in df.groupby(group_cols):
@@ -190,10 +189,6 @@ def compute_all_metrics(
     # Always compute standard I-AUROC
     metrics['i_auroc'] = compute_i_auroc(df)
 
-    # Real-IAD specific metrics
-    if config['has_gt_labels']:
-        metrics['gt_i_auroc'] = compute_gt_i_auroc(df)
-
     if config['has_sample_id']:
         metrics['s_auroc'] = compute_s_auroc(df)
 
@@ -221,7 +216,6 @@ if __name__ == '__main__':
     df = pd.DataFrame({
         'image_score': np.random.rand(n),
         'label':       np.random.randint(0, 2, n),
-        'label_gt':    np.random.randint(0, 2, n),
         'sample_id':   np.repeat([f'cat_S{i:04d}' for i in range(30)], 5),
         'category':    np.random.choice(['audiojack', 'pcb'], n),
         'viewpoint':   np.tile(['C1', 'C2', 'C3', 'C4', 'C5'], 30),
@@ -234,9 +228,6 @@ if __name__ == '__main__':
 
     print("Testing compute_i_auroc:")
     print(round(compute_i_auroc(df), 4))
-
-    print("\nTesting compute_gt_i_auroc:")
-    print(round(compute_gt_i_auroc(df), 4))
 
     print("\nTesting compute_s_auroc:")
     print(round(compute_s_auroc(df), 4))
