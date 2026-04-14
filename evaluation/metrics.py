@@ -1,8 +1,8 @@
 import torch
+import adeval
 import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
-from skimage import measure
 from typing import Optional
 
 
@@ -73,84 +73,29 @@ def compute_s_auroc(df: pd.DataFrame) -> float:
 # pixel_scores and pixel_labels are flattened arrays added during inference
 # =============================================================================
 
-def compute_p_auroc(df: pd.DataFrame) -> float:
+def compute_p_auroc_aupro(df: pd.DataFrame) -> tuple:
     """
-    Pixel-level AUROC.
-    Measures how well the anomaly map separates defective from normal pixels.
-    Every pixel is weighted equally — large defects dominate small ones.
-    Used for comparability with Dinomaly and INP-Former papers.
-    Requires columns: pixel_scores, pixel_labels, has_mask
-    """
-    df_masked = df[df['has_mask'] == True]
-
-    if df_masked.empty:
-        return float('nan')
-
-    # Flatten all pixel scores and labels across all masked images
-    all_scores = np.concatenate(df_masked['pixel_scores'].values)
-    all_labels = np.concatenate(df_masked['pixel_labels'].values)
-
-    return roc_auc_score(all_labels, all_scores)
-
-
-def compute_aupro(df: pd.DataFrame, num_thresh: int = 100) -> float:
-    """
-    Area Under Per-Region Overlap.
-    Each defect region weighted equally regardless of size.
-    Fairer than P-AUROC for datasets with very small defects like Real-IAD.
-    Custom implementation using skimage connected components.
+    Pixel-level AUROC, AUPR and AUPRO using official ADEval implementation.
+    Ensures comparability with Real-IAD leaderboard results.
     Only computed on images where GT mask exists (has_mask=True).
     Requires columns: pixel_scores_2d, pixel_labels_2d, has_mask
-    Note: expects 2D arrays (H x W), not flattened 1D arrays.
+    Returns: (p_auroc, p_aupr, aupro)
     """
-
     df_masked = df[df['has_mask'] == True]
+
     if df_masked.empty:
-        return float('nan')
+        return float('nan'), float('nan'), float('nan')
 
-    all_scores = np.concatenate([r.flatten() 
-                                  for r in df_masked['pixel_scores_2d'].values])
-    thresholds = np.linspace(all_scores.min(), all_scores.max(), num_thresh)
+    # Patch numpy for ADEval compatibility — np.trapz renamed to np.trapezoid in numpy 2.x
+    if not hasattr(np, 'trapz'):
+        np.trapz = np.trapezoid
 
-    fprs, pros = [], []
+    # ADEval requires float32 predictions and uint8 targets
+    preds = [arr.astype(np.float32) for arr in df_masked['pixel_scores_2d'].values]
+    targets = [arr.astype(np.uint8) for arr in df_masked['pixel_labels_2d'].values]
 
-    for thresh in thresholds:
-        region_pros = []
-        all_gt, all_pred = [], []
-
-        for _, row in df_masked.iterrows():
-            gt = row['pixel_labels_2d'].astype(int)    # H x W
-            scores = row['pixel_scores_2d']             # H x W
-            pred = (scores >= thresh).astype(int)       # H x W
-
-            all_gt.append(gt.flatten())
-            all_pred.append(pred.flatten())
-
-            # Find connected regions in GT mask
-            labeled = measure.label(gt)
-            for region_id in range(1, labeled.max() + 1):
-                region_mask = (labeled == region_id)
-                overlap = pred[region_mask].sum() / (region_mask.sum() + 1e-8)
-                region_pros.append(float(overlap))
-
-        # FPR across all pixels at this threshold
-        gt_flat = np.concatenate(all_gt)
-        pred_flat = np.concatenate(all_pred)
-        tn = ((pred_flat == 0) & (gt_flat == 0)).sum()
-        fp = ((pred_flat == 1) & (gt_flat == 0)).sum()
-        fpr = fp / (fp + tn + 1e-8)
-
-        fprs.append(fpr)
-        pros.append(np.mean(region_pros) if region_pros else 0.0)
-
-    # Integrate PRO over FPR up to 0.3 (standard cutoff)
-    fprs = np.array(fprs)
-    pros = np.array(pros)
-    valid = fprs <= 0.3
-    if valid.sum() < 2:
-        return float('nan')
-
-    return float(np.trapezoid(pros[valid], fprs[valid]) / 0.3)
+    p_auroc, p_aupr, aupro = adeval.auroc_aupr_aupro(preds, targets)
+    return p_auroc, p_aupr, aupro
 
 
 # =============================================================================
@@ -254,8 +199,10 @@ def compute_all_metrics(
 
     # Pixel-level metrics — only when pixel scores are available
     if compute_pixel:
-        metrics['p_auroc'] = compute_p_auroc(df)
-        metrics['aupro'] = compute_aupro(df)
+        p_auroc, p_aupr, aupro = compute_p_auroc_aupro(df)
+        metrics['p_auroc'] = p_auroc
+        metrics['p_aupr'] = p_aupr
+        metrics['aupro'] = aupro
 
     return metrics
 
@@ -281,8 +228,6 @@ if __name__ == '__main__':
         'defect_type': np.random.choice(['CH', 'AK', 'OK'], n),
         'has_mask':    np.random.choice([True, False], n),
         # Synthetic pixel scores — normally added during inference
-        'pixel_scores': [np.random.rand(100) for _ in range(n)],
-        'pixel_labels': [np.random.randint(0, 2, 100) for _ in range(n)],
         'pixel_scores_2d': [np.random.rand(10, 10) for _ in range(n)],
         'pixel_labels_2d': [np.random.randint(0, 2, (10, 10)) for _ in range(n)]
     })
@@ -296,8 +241,11 @@ if __name__ == '__main__':
     print("\nTesting compute_s_auroc:")
     print(round(compute_s_auroc(df), 4))
 
-    print("\nTesting compute_p_auroc:")
-    print(round(compute_p_auroc(df), 4))
+    print("\nTesting compute_p_auroc_aupro:")
+    p_auroc, p_aupr, aupro = compute_p_auroc_aupro(df)
+    print(f"  p_auroc: {round(p_auroc, 4)}")
+    print(f"  p_aupr:  {round(p_aupr, 4)}")
+    print(f"  aupro:   {round(aupro, 4)}")
 
     print("\nTesting compute_degradation_ratio:")
     print(round(compute_degradation_ratio(0.91, 0.85), 2), "%")
