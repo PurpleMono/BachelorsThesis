@@ -166,7 +166,7 @@ def load_realiad_all(
             continue
 
         json_file = (Path(data_root) / 'realiad_jsons' /
-                     'realiad_jsons' / f'{folder.name}.json')
+             f'{folder.name}.json')
 
         try:
             df = load_realiad_category(
