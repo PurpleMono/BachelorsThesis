@@ -74,7 +74,7 @@ def load_realiad_category(
     # Resolve JSON path — standard Real-IAD structure
     if json_path is None:
         json_file = (category_path.parent.parent /
-                     'realiad_jsons' / 'realiad_jsons' /
+                     'realiad_jsons' /
                      f'{category}.json')
     else:
         json_file = Path(json_path)
