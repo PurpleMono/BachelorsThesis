@@ -179,8 +179,8 @@ def train_anomalydino(
 ) -> object:
     """
     Build AnomalyDINO memory bank from normal images in train_df.
-    AnomalyDINO is training-free — fit() extracts DINOv2 features from
-    normal training images and stores them in a memory bank.
+    AnomalyDINO is training-free — features are extracted from normal images
+    and stored in a memory bank via embedding_store then consolidated with fit().
     """
     from anomalib.models import AnomalyDINO
 
@@ -199,21 +199,18 @@ def train_anomalydino(
 
     model = AnomalyDINO()
     torch_model = model.model.to(device)
-    torch_model.eval()
+    torch_model.train()  # train mode to populate embedding_store
 
-    # Extract features from all normal training images
-    all_features = []
+    # Extract features into embedding_store
     with torch.no_grad():
         for batch in tqdm(loader, desc="Building memory bank"):
             images = batch['image'].to(device)
-            features = torch_model.extract_features(images)
-            all_features.append(features.cpu())
+            # Forward pass in train mode populates embedding_store
+            torch_model(images)
 
-    # Build memory bank using AnomalyDINO's fit method
-    all_features_tensor = torch.cat(all_features, dim=0)
-    torch_model.fit(all_features_tensor.to(device))
-
-    print(f"Memory bank built successfully")
+    # Consolidate memory bank
+    torch_model.fit()
+    print(f"Memory bank built: {torch_model.memory_bank.shape}")
 
     if save_path:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
