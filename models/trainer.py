@@ -179,21 +179,10 @@ def train_anomalydino(
 ) -> object:
     """
     Build AnomalyDINO memory bank from normal images in train_df.
-    AnomalyDINO is training-free — this function just runs a forward pass
-    over all normal training images to populate the memory bank.
-
-    Args:
-        train_df:   dataframe from realiad_utils — normal images only
-        device:     'cuda' or 'cpu'
-        repo_path:  path to BachelorsThesis repo
-        save_path:  optional path to save memory bank
-
-    Returns:
-        AnomalyDINO model with populated memory bank
+    AnomalyDINO is training-free — fit() extracts DINOv2 features from
+    normal training images and stores them in a memory bank.
     """
     from anomalib.models import AnomalyDINO
-    from anomalib.engine import Engine
-    from anomalib.data import MVTecAD
 
     RealIADTorchDataset = _load_dataset_class(repo_path)
 
@@ -209,30 +198,29 @@ def train_anomalydino(
     )
 
     model = AnomalyDINO()
-    model = model.to(device)
-    model.eval()
+    torch_model = model.model.to(device)
+    torch_model.eval()
 
-    # AnomalyDINO builds memory bank during a fit-like forward pass
-    # We call the model's memory bank construction directly
+    # Extract features from all normal training images
     all_features = []
     with torch.no_grad():
         for batch in tqdm(loader, desc="Building memory bank"):
             images = batch['image'].to(device)
-            # Extract features from encoder
-            features = model.model.encoder(images)
+            features = torch_model.extract_features(images)
             all_features.append(features.cpu())
 
-    # Store features in memory bank
-    memory_bank = torch.cat(all_features, dim=0)
-    model.model.memory_bank = memory_bank.to(device)
+    # Build memory bank using AnomalyDINO's fit method
+    all_features_tensor = torch.cat(all_features, dim=0)
+    torch_model.fit(all_features_tensor.to(device))
 
-    print(f"Memory bank built: {memory_bank.shape}")
+    print(f"Memory bank built successfully")
 
     if save_path:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        torch.save(memory_bank, save_path)
+        torch.save(torch_model.memory_bank, save_path)
         print(f"Memory bank saved to {save_path}")
 
+    model.model = torch_model
     return model
 
 
