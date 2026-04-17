@@ -176,11 +176,28 @@ def train_anomalydino(
     device: str = 'cuda',
     repo_path: str = '/content/drive/MyDrive/BachelorsThesis',
     save_path: str = None,
+    sampling_ratio: float = 0.1,
 ) -> object:
     """
     Build AnomalyDINO memory bank from normal images in train_df.
     AnomalyDINO is training-free — features are extracted from normal images
     and stored in a memory bank via embedding_store then consolidated with fit().
+    
+    Coreset subsampling is applied to reduce memory bank size for GPU compatibility.
+    Default ratio of 0.1 follows the original paper's recommendation.
+    Adjust sampling_ratio based on available GPU memory:
+        T4 (16GB): 0.1 per category, lower for multi-class
+        L4 (24GB): up to 0.1 for multi-class with all 30 categories
+
+    Args:
+        train_df:       dataframe from realiad_utils — normal images only
+        device:         'cuda' or 'cpu'
+        repo_path:      path to BachelorsThesis repo
+        save_path:      optional path to save memory bank
+        sampling_ratio: coreset subsampling ratio (default 0.1 per paper)
+
+    Returns:
+        AnomalyDINO model with populated and subsampled memory bank
     """
     from anomalib.models import AnomalyDINO
 
@@ -188,6 +205,7 @@ def train_anomalydino(
 
     normal_df = train_df[train_df['label'] == 0].reset_index(drop=True)
     print(f"Building AnomalyDINO memory bank from {len(normal_df)} normal images")
+    print(f"Coreset sampling ratio: {sampling_ratio}")
 
     dataset = RealIADTorchDataset(normal_df, load_masks=False)
     loader = DataLoader(
@@ -199,16 +217,17 @@ def train_anomalydino(
 
     model = AnomalyDINO()
     torch_model = model.model.to(device)
-    torch_model.train()  # train mode to populate embedding_store
+    torch_model.coreset_subsampling = True
+    torch_model.sampling_ratio = sampling_ratio
+    torch_model.train()
 
     # Extract features into embedding_store
     with torch.no_grad():
         for batch in tqdm(loader, desc="Building memory bank"):
             images = batch['image'].to(device)
-            # Forward pass in train mode populates embedding_store
             torch_model(images)
 
-    # Consolidate memory bank
+    # Consolidate and subsample memory bank
     torch_model.fit()
     print(f"Memory bank built: {torch_model.memory_bank.shape}")
 
@@ -219,7 +238,6 @@ def train_anomalydino(
 
     model.model = torch_model
     return model
-
 
 # =============================================================================
 # SECTION 2: INFERENCE FUNCTION (shared by all models)
