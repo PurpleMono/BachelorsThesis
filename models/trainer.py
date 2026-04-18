@@ -248,6 +248,7 @@ def train_anomalydino(
 
 def train_inpformer(
     train_df: pd.DataFrame,
+    dataset_root: str = '/content/drive/MyDrive/datasets/realiad_512',
     n_epochs: int = 200,
     batch_size: int = 16,
     lr: float = 1e-3,
@@ -266,14 +267,15 @@ def train_inpformer(
     at test time to guide feature reconstruction.
 
     Args:
-        train_df:    dataframe from realiad_utils — normal images only
-        n_epochs:    number of training epochs (default: 200 per paper)
-        batch_size:  training batch size (default: 16 per paper)
-        lr:          learning rate (default: 1e-3 per paper)
-        inp_num:     number of prototype tokens (default: 6 per paper)
-        device:      'cuda' or 'cpu'
-        repo_path:   path to BachelorsThesis repo
-        save_path:   optional path to save model weights
+        train_df:      dataframe from realiad_utils — normal images only
+        dataset_root:  path to Real-IAD dataset root (contains category folders)
+        n_epochs:      number of training epochs (default: 200 per paper)
+        batch_size:    training batch size (default: 16 per paper)
+        lr:            learning rate (default: 1e-3 per paper)
+        inp_num:       number of prototype tokens (default: 6 per paper)
+        device:        'cuda' or 'cpu'
+        repo_path:     path to BachelorsThesis repo
+        save_path:     optional path to save model weights
 
     Returns:
         Trained INP-Former model ready for inference
@@ -297,10 +299,9 @@ def train_inpformer(
     normal_df = train_df[train_df['label'] == 0].reset_index(drop=True)
     print(f"Training INP-Former on {len(normal_df)} normal images")
 
-    # Use INP-Former's RealIADDataset directly for compatibility
-    # This reads from the same JSON files as our loader
+    # Use INP-Former's RealIADDataset with explicit dataset_root
     dataset = RealIADDataset(
-        root=os.path.dirname(normal_df['image_path'].iloc[0].rsplit('/', 2)[0]),
+        root=dataset_root,
         category=normal_df['category'].iloc[0],
         transform=data_transform,
         gt_transform=None,
@@ -475,6 +476,7 @@ def run_inference(
 def run_inference_inpformer(
     model,
     test_df: pd.DataFrame,
+    dataset_root: str = '/content/drive/MyDrive/datasets/realiad_512',
     device: str = 'cuda',
     batch_size: int = 8,
     repo_path: str = '/content/drive/MyDrive/BachelorsThesis',
@@ -504,7 +506,6 @@ def run_inference_inpformer(
 
     # Use INP-Former's dataset for test loading
     category = test_df['category'].iloc[0]
-    dataset_root = os.path.dirname(test_df['image_path'].iloc[0].rsplit('/', 2)[0])
 
     test_data = RealIADDataset(
         root=dataset_root,
