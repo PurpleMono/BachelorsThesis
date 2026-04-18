@@ -1,0 +1,3 @@
+[submodule "models/inp_former"]
+	path = models/inp_former
+	url = https://github.com/PurpleMono/INP-Former.git
