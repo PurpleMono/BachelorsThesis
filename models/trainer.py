@@ -289,13 +289,15 @@ def run_inference(
     with torch.no_grad():
         for batch in tqdm(loader, desc=f"Inference [{model_name}]"):
             images = batch['image'].to(device)
-
-            # Run inference
+        
+            # GPU inference
             output = model(images)
-            scores = output.pred_score.cpu().numpy()
-
-            all_scores.extend(scores.tolist())
-            all_paths.extend(batch['image_path'])
+            scores = output.pred_score.cpu().numpy().flatten()
+        
+            # Collect scores and paths
+            for score, path in zip(scores, batch['image_path']):
+                all_scores.append(float(score))
+                all_paths.append(path)
 
     # Build results dataframe
     results_df = test_df.copy()
