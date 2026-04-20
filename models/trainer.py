@@ -59,6 +59,7 @@ def train_dinomaly(
     n_iterations: int = 50000,
     batch_size: int = 16,
     lr: float = 2e-3,
+    dropout_rate: float = 0.4,
     device: str = 'cuda',
     repo_path: str = '/content/drive/MyDrive/BachelorsThesis',
     save_path: str = None,
@@ -66,13 +67,16 @@ def train_dinomaly(
     """
     Train Dinomaly on normal images from train_df.
     Uses Anomalib's Dinomaly model with a custom training loop.
-    Follows published paper defaults: StableAdamW, lr=2e-3, 50k iterations.
+    Follows published paper defaults for Real-IAD:
+    - StableAdamW, lr=2e-3, 50k iterations
+    - Dropout rate 0.4 (increased from default 0.2 for diverse datasets)
 
     Args:
         train_df:      dataframe from realiad_utils — normal images only
         n_iterations:  total training iterations (default: 50000 per paper)
         batch_size:    training batch size (default: 16 per paper)
         lr:            learning rate (default: 2e-3 per paper)
+        dropout_rate:  noisy bottleneck dropout (default: 0.4 for Real-IAD per paper)
         device:        'cuda' or 'cpu'
         repo_path:     path to BachelorsThesis repo
         save_path:     optional path to save model weights
@@ -84,7 +88,6 @@ def train_dinomaly(
 
     RealIADTorchDataset = _load_dataset_class(repo_path)
 
-    # Only normal images for training
     normal_df = train_df[train_df['label'] == 0].reset_index(drop=True)
     print(f"Training Dinomaly on {len(normal_df)} normal images")
 
@@ -97,19 +100,24 @@ def train_dinomaly(
         drop_last=True
     )
 
-    # Build model
     model = Dinomaly()
     torch_model = model.model.to(device)
+
+    # Fix dropout rate for Real-IAD — paper specifies 0.4 for diverse datasets
+    # Anomalib default is 0.2 which is correct for MVTec-AD but not Real-IAD
+    for module in torch_model.modules():
+        if isinstance(module, torch.nn.Dropout):
+            module.p = dropout_rate
+    print(f"Noisy bottleneck dropout rate set to {dropout_rate} for Real-IAD")
+
     torch_model.train()
 
-    # Identify trainable parameters (decoder and bottleneck only — encoder is frozen)
     trainable_params = [
         p for name, p in torch_model.named_parameters()
         if 'encoder' not in name
     ]
     print(f"Trainable parameters: {sum(p.numel() for p in trainable_params) / 1e6:.1f}M")
 
-    # StableAdamW optimizer — matches paper defaults
     try:
         from anomalib.models.image.dinomaly.torch_model import StableAdamW
         optimizer = StableAdamW(
@@ -124,12 +132,10 @@ def train_dinomaly(
         )
         print("Warning: StableAdamW not available, using AdamW")
 
-    # Cosine LR scheduler
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=n_iterations, eta_min=lr * 0.1
     )
 
-    # Training loop
     global_step = 0
     loss_history = []
 
@@ -141,7 +147,6 @@ def train_dinomaly(
 
             images = batch['image'].to(device)
 
-            # Forward pass
             en, de = torch_model.get_encoder_decoder_outputs(images)
             loss = torch_model.loss_fn(
                 encoder_features=en,
@@ -149,7 +154,6 @@ def train_dinomaly(
                 global_step=global_step
             )
 
-            # Backward pass
             optimizer.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(trainable_params, max_norm=0.1)
@@ -412,11 +416,15 @@ def run_inference(
     device: str = 'cuda',
     batch_size: int = 8,
     repo_path: str = '/content/drive/MyDrive/BachelorsThesis',
+    max_ratio: float = None,
 ) -> pd.DataFrame:
     """
     Run inference on test_df and return results dataframe.
     Works for Dinomaly and AnomalyDINO (Anomalib-based models).
-    For INP-Former use run_inference_inpformer() instead.
+
+    For Dinomaly on Real-IAD, max_ratio is set to 0.001 (top 0.1% of pixels)
+    as specified in the paper. Anomalib default is 0.01 (top 1%) which is
+    incorrect for Real-IAD where defects are typically small.
 
     Args:
         model:       trained model from train_dinomaly or train_anomalydino
@@ -425,6 +433,8 @@ def run_inference(
         device:      'cuda' or 'cpu'
         batch_size:  inference batch size
         repo_path:   path to BachelorsThesis repo
+        max_ratio:   top pixel ratio for image score (None = use model default)
+                     For Dinomaly on Real-IAD use 0.001 per paper
 
     Returns:
         DataFrame with original columns plus image_score and model columns
@@ -438,6 +448,14 @@ def run_inference(
         shuffle=False,
         num_workers=2
     )
+
+    # Patch Dinomaly image score ratio for Real-IAD if specified
+    # Paper specifies top 0.1% for Real-IAD, Anomalib default is 1%
+    if model_name == 'Dinomaly' and max_ratio is not None:
+        import anomalib.models.image.dinomaly.torch_model as dinomaly_module
+        original_ratio = dinomaly_module.DEFAULT_MAX_RATIO
+        dinomaly_module.DEFAULT_MAX_RATIO = max_ratio
+        print(f"Dinomaly image score ratio set to {max_ratio} (was {original_ratio})")
 
     model.eval()
     if hasattr(model, 'model'):
@@ -459,7 +477,10 @@ def run_inference(
                 all_scores.append(float(score))
                 all_paths.append(path)
 
-    # Build results dataframe
+    # Restore original ratio after inference
+    if model_name == 'Dinomaly' and max_ratio is not None:
+        dinomaly_module.DEFAULT_MAX_RATIO = original_ratio
+
     results_df = test_df.copy()
     path_to_score = dict(zip(all_paths, all_scores))
     results_df['image_score'] = results_df['image_path'].map(path_to_score)
