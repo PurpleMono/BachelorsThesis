@@ -224,10 +224,13 @@ def train_anomalydino(
         num_workers=2
     )
 
-    model = AnomalyDINO()
+    model = AnomalyDINO(
+        encoder_name='dinov2reg_vit_base_14',
+        coreset_subsampling=True,
+        sampling_ratio=sampling_ratio,
+        masking=False,
+    )
     torch_model = model.model.to(device)
-    torch_model.coreset_subsampling = True
-    torch_model.sampling_ratio = sampling_ratio
     torch_model.train()
 
     # Extract features into embedding_store
