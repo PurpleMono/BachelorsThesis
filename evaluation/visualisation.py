@@ -117,7 +117,7 @@ def plot_anomaly_map_comparison(
 def plot_worst_group_examples(
     df_dict: dict,
     anomaly_maps_dict: dict,
-    top_n: int = 5,
+    top_n: int = 10,
     min_disagreement: float = 0.3,
     output_dir: str = 'results/figures/worst_groups',
 ) -> list:
@@ -201,9 +201,12 @@ def plot_worst_group_examples(
 
         title = (f"Disagreement Group {idx+1}: {category} | "
                  f"{viewpoint} | {defect_type}")
+        # Get just the filename without extension
+        image_filename = Path(image_path).stem
+
         output_path = (
             f"{output_dir}/disagreement_{idx+1}_"
-            f"{category}_{viewpoint}_{defect_type}.png")
+            f"{category}_{viewpoint}_{defect_type}_{image_filename}.png")
 
         plot_anomaly_map_comparison(
             image_path=image_path,
