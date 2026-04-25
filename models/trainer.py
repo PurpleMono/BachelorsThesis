@@ -420,24 +420,34 @@ def run_inference(
     batch_size: int = 8,
     repo_path: str = '/content/drive/MyDrive/BachelorsThesis',
     max_ratio: float = None,
+    save_anomaly_maps: bool = False,
+    maps_save_dir: str = None,
 ) -> pd.DataFrame:
     """
     Run inference on test_df and return results dataframe.
     Works for Dinomaly and AnomalyDINO (Anomalib-based models).
 
-    For Dinomaly on Real-IAD, max_ratio is set to 0.001 (top 0.1% of pixels)
-    as specified in the paper. Anomalib default is 0.01 (top 1%) which is
-    incorrect for Real-IAD where defects are typically small.
+    Anomaly maps are optionally saved as compressed numpy files (.npz)
+    containing both the anomaly map array and the image-level score.
+    Only anomalous images (label == 1) are saved to minimise storage.
+
+    File naming convention:
+        {maps_save_dir}/{model_name}/{category}/{image_stem}.npz
+    Each .npz contains:
+        anomaly_map: float32 array of shape (H, W)
+        anomaly_score: scalar float
 
     Args:
-        model:       trained model from train_dinomaly or train_anomalydino
-        test_df:     dataframe with all test images (normal + anomalous)
-        model_name:  'Dinomaly' or 'AnomalyDINO'
-        device:      'cuda' or 'cpu'
-        batch_size:  inference batch size
-        repo_path:   path to BachelorsThesis repo
-        max_ratio:   top pixel ratio for image score (None = use model default)
-                     For Dinomaly on Real-IAD use 0.001 per paper
+        model:            trained model
+        test_df:          dataframe with all test images
+        model_name:       'Dinomaly' or 'AnomalyDINO'
+        device:           'cuda' or 'cpu'
+        batch_size:       inference batch size
+        repo_path:        path to BachelorsThesis repo
+        max_ratio:        top pixel ratio for Dinomaly image score
+        save_anomaly_maps: whether to save anomaly maps to disk
+        maps_save_dir:    root directory for saving maps
+                          e.g. '/content/drive/MyDrive/BachelorsThesis/results/anomaly_maps'
 
     Returns:
         DataFrame with original columns plus image_score and model columns
@@ -453,12 +463,11 @@ def run_inference(
     )
 
     # Patch Dinomaly image score ratio for Real-IAD if specified
-    # Paper specifies top 0.1% for Real-IAD, Anomalib default is 1%
     if model_name == 'Dinomaly' and max_ratio is not None:
         import anomalib.models.image.dinomaly.torch_model as dinomaly_module
         original_ratio = dinomaly_module.DEFAULT_MAX_RATIO
         dinomaly_module.DEFAULT_MAX_RATIO = max_ratio
-        print(f"Dinomaly image score ratio set to {max_ratio} (was {original_ratio})")
+        print(f"Dinomaly image score ratio set to {max_ratio}")
 
     model.eval()
     if hasattr(model, 'model'):
@@ -467,20 +476,52 @@ def run_inference(
     all_scores = []
     all_paths = []
 
+    # Build label lookup for deciding which images to save maps for
+    path_to_label = dict(zip(
+        test_df['image_path'].tolist(),
+        test_df['label'].tolist()
+    ))
+    path_to_category = dict(zip(
+        test_df['image_path'].tolist(),
+        test_df['category'].tolist()
+    )) if 'category' in test_df.columns else {}
+
     with torch.no_grad():
         for batch in tqdm(loader, desc=f"Inference [{model_name}]"):
             images = batch['image'].to(device)
 
-            # GPU inference — expensive operation, produces one score per image
+            # GPU inference
             output = model(images)
             scores = output.pred_score.cpu().numpy().flatten()
+            amaps = output.anomaly_map.cpu().numpy()
 
-            # Collect scores and paths — cheap CPU operation, runs per batch item
-            for score, path in zip(scores, batch['image_path']):
-                all_scores.append(float(score))
+            # Collect scores and paths
+            for score, path, amap in zip(
+                    scores, batch['image_path'], amaps):
+                score_val = float(score)
+                all_scores.append(score_val)
                 all_paths.append(path)
 
-    # Restore original ratio after inference
+                # Save anomaly map if requested and image is anomalous
+                if save_anomaly_maps and maps_save_dir:
+                    label = path_to_label.get(path, -1)
+                    if label == 1:
+                        category = path_to_category.get(path, 'unknown')
+                        save_dir = os.path.join(
+                            maps_save_dir, model_name, category)
+                        os.makedirs(save_dir, exist_ok=True)
+                        stem = os.path.splitext(
+                            os.path.basename(path))[0]
+                        save_path = os.path.join(
+                            save_dir, f"{stem}.npz")
+                        # amap shape is (1, H, W) — squeeze to (H, W)
+                        np.savez_compressed(
+                            save_path,
+                            anomaly_map=amap[0].astype(np.float32),
+                            anomaly_score=np.float32(score_val)
+                        )
+
+    # Restore original ratio
     if model_name == 'Dinomaly' and max_ratio is not None:
         dinomaly_module.DEFAULT_MAX_RATIO = original_ratio
 
@@ -493,6 +534,10 @@ def run_inference(
     print(f"Total images: {len(results_df)}")
     print(f"Score range: [{results_df['image_score'].min():.4f}, "
           f"{results_df['image_score'].max():.4f}]")
+    if save_anomaly_maps:
+        n_saved = results_df['label'].sum()
+        print(f"Anomaly maps saved: {int(n_saved)} anomalous images")
+        print(f"Save directory: {maps_save_dir}/{model_name}/")
 
     return results_df
 
@@ -504,18 +549,31 @@ def run_inference_inpformer(
     device: str = 'cuda',
     batch_size: int = 8,
     repo_path: str = '/content/drive/MyDrive/BachelorsThesis',
+    save_anomaly_maps: bool = False,
+    maps_save_dir: str = None,
 ) -> pd.DataFrame:
     """
     Run INP-Former inference on test_df and return results dataframe.
-    Uses INP-Former's evaluation_batch function internally then maps
-    scores back to the standardised dataframe format.
+
+    Anomaly maps are optionally saved as compressed numpy files (.npz)
+    containing both the anomaly map array and the image-level score.
+    Only anomalous images (label == 1) are saved to minimise storage.
+
+    File naming convention:
+        {maps_save_dir}/INP-Former/{category}/{image_stem}.npz
+    Each .npz contains:
+        anomaly_map: float32 array of shape (H, W)
+        anomaly_score: scalar float
 
     Args:
-        model:      trained INP-Former model
-        test_df:    dataframe with all test images (normal + anomalous)
-        device:     'cuda' or 'cpu'
-        batch_size: inference batch size
-        repo_path:  path to BachelorsThesis repo
+        model:            trained INP-Former model
+        test_df:          dataframe with all test images
+        dataset_root:     path to Real-IAD dataset root
+        device:           'cuda' or 'cpu'
+        batch_size:       inference batch size
+        repo_path:        path to BachelorsThesis repo
+        save_anomaly_maps: whether to save anomaly maps to disk
+        maps_save_dir:    root directory for saving maps
 
     Returns:
         DataFrame with original columns plus image_score and model columns
@@ -528,7 +586,6 @@ def run_inference_inpformer(
     _, gt_transform = get_data_transforms(448, 392)
     data_transform, _ = get_data_transforms(448, 392)
 
-    # Use INP-Former's dataset for test loading
     category = test_df['category'].iloc[0]
 
     test_data = RealIADDataset(
@@ -547,14 +604,22 @@ def run_inference_inpformer(
     )
 
     model.eval()
-    gaussian_kernel = get_gaussian_kernel(kernel_size=5, sigma=4).to(device)
+    gaussian_kernel = get_gaussian_kernel(
+        kernel_size=5, sigma=4).to(device)
+
+    # Build label lookup
+    path_to_label = dict(zip(
+        test_df['image_path'].tolist(),
+        test_df['label'].tolist()
+    ))
 
     all_scores = []
     all_paths = []
     all_labels = []
 
     with torch.no_grad():
-        for img, gt, label, img_path in tqdm(loader, desc="Inference [INP-Former]"):
+        for img, gt, label, img_path in tqdm(
+                loader, desc="Inference [INP-Former]"):
             img = img.to(device)
             output = model(img)
             en, de = output[0], output[1]
@@ -562,7 +627,8 @@ def run_inference_inpformer(
             # Compute anomaly map
             anomaly_map, _ = cal_anomaly_maps(en, de, img.shape[-1])
             anomaly_map = F.interpolate(
-                anomaly_map, size=256, mode='bilinear', align_corners=False)
+                anomaly_map, size=256,
+                mode='bilinear', align_corners=False)
             anomaly_map = gaussian_kernel(anomaly_map)
 
             # Image score: mean of top 1% pixels
@@ -570,12 +636,33 @@ def run_inference_inpformer(
             k = max(1, int(flat.shape[1] * 0.01))
             scores = torch.topk(flat, k, dim=1)[0].mean(dim=1)
 
-            for score, path, lbl in zip(scores.cpu().numpy(), img_path, label.numpy()):
-                all_scores.append(float(score))
+            for score, path, lbl, amap in zip(
+                    scores.cpu().numpy(),
+                    img_path,
+                    label.numpy(),
+                    anomaly_map.cpu().numpy()):
+
+                score_val = float(score)
+                all_scores.append(score_val)
                 all_paths.append(path)
                 all_labels.append(int(lbl))
 
-    # Build results dataframe — use INP-Former's labels directly
+                # Save anomaly map if requested and image is anomalous
+                if save_anomaly_maps and maps_save_dir:
+                    if int(lbl) == 1:
+                        save_dir = os.path.join(
+                            maps_save_dir, 'INP-Former', category)
+                        os.makedirs(save_dir, exist_ok=True)
+                        stem = os.path.splitext(
+                            os.path.basename(path))[0]
+                        save_path = os.path.join(
+                            save_dir, f"{stem}.npz")
+                        np.savez_compressed(
+                            save_path,
+                            anomaly_map=amap[0].astype(np.float32),
+                            anomaly_score=np.float32(score_val)
+                        )
+
     results_df = pd.DataFrame({
         'image_path': all_paths,
         'image_score': all_scores,
@@ -584,7 +671,6 @@ def run_inference_inpformer(
         'category': category,
     })
 
-    # Merge with test_df to get viewpoint, defect_type etc.
     meta_cols = ['image_path', 'viewpoint', 'defect_type',
                  'sample_id', 'has_mask', 'anomaly_class']
     available = [c for c in meta_cols if c in test_df.columns]
@@ -596,6 +682,10 @@ def run_inference_inpformer(
     print(f"Total images: {len(results_df)}")
     print(f"Score range: [{results_df['image_score'].min():.4f}, "
           f"{results_df['image_score'].max():.4f}]")
+    if save_anomaly_maps:
+        n_saved = sum(all_labels)
+        print(f"Anomaly maps saved: {n_saved} anomalous images")
+        print(f"Save directory: {maps_save_dir}/INP-Former/")
 
     return results_df
 
