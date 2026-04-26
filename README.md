@@ -1,73 +1,85 @@
-# Bachelor's Thesis — DINOv2-Based Industrial Anomaly Detection Benchmark
+# Memory, Reconstruction, or Prototypes?
+## Benchmarking DINOv2-Based Models for Multi-Class Industrial Anomaly Detection
 
-**Author:** Jeremi Degenhardt  
-**Institution:** FAU Erlangen-Nürnberg, Chair of IT Management (Prof. Amberg)  
-**Supervisor:** René Gröbner  
+Bachelor thesis — Wirtschaftsinformatik, FAU Erlangen-Nürnberg
+Author: Jeremi Degenhardt
+Supervisor: René Gröbner
 
 ---
 
-## Research Overview
+## Overview
 
-This thesis benchmarks three DINOv2-based multi-class anomaly detection models under identical conditions, with a focus on cross-viewpoint robustness in industrial inspection settings.
+This repository contains the complete implementation for a benchmarking
+study comparing three DINOv2-based anomaly detection models on the
+Real-IAD multi-view industrial dataset.
 
-All three models share the same frozen DINOv2 ViT-Base/14 backbone. The only variable is how each model defines normality:
+| Model | Paradigm | Venue | Backbone |
+|---|---|---|---|
+| AnomalyDINO | Memory-based (training-free) | WACV 2025 | DINOv2-Register ViT-Base/14 |
+| Dinomaly | Reconstruction-based | CVPR 2025 | DINOv2-Register ViT-Base/14 |
+| INP-Former | Prototype-based | CVPR 2025 | DINOv2-Register ViT-Base/14 |
 
-| Model | Mechanism | Venue |
-|-------|-----------|-------|
-| AnomalyDINO | Training-free nearest-neighbour memory bank | WACV 2025 |
-| Dinomaly | Reconstruction-based with trained decoder | CVPR 2025 |
-| INP-Former | Reconstruction guided by test-image prototypes | CVPR 2025 |
+Dataset: Real-IAD 512px (30 categories, 5 viewpoints)
+Secondary: MVTec AD (implementation validation only)
 
-## Research Questions
-
-**RQ1:** Does the detection mechanism influence cross-viewpoint robustness when the DINOv2 backbone is held constant?
-
-**RQ2:** Which combinations of object category, viewpoint, and defect type represent systematic failure modes, and do these differ across detection mechanisms?
-
-**RQ3:** How do the three models compare on the accuracy-latency trade-off on identical hardware (Google Colab T4)?
-
-## Datasets
-
-- **Real-IAD** (primary) — 30 categories, 5 viewpoints, ~150k images
-- **MVTec AD** (secondary) — 15 categories, standard benchmark
-- **MVTec AD 2** (supplementary) — 8 categories, harder conditions
-
-## Evaluation Protocols
-
-- **Standard protocol** — train all 5 views, test all 5 views
-- **Cross-viewpoint protocol** — train on C1+C2, test on C3-C5
-
-## Metrics
-
-I-AUROC, P-AUROC, AUPRO, S-AUROC, Performance Degradation Ratio, WGA, Inference Time, Memory Footprint
+---
 
 ## Repository Structure
-├── evaluation/          # metric computation and analysis code
-├── data/                # dataset loading utilities
-├── notebooks/           # Colab experiment notebooks
-├── results/             # generated outputs (not committed)
-└── requirements.txt
 
-## Setup
-```bash
-git clone https://github.com/PurpleMono/BachelorsThesis.git
-cd BachelorsThesis
-python3.11 -m venv venv
-source venv/bin/activate
+BachelorsThesis/
+├── data/
+│   ├── realiad_utils.py       — Real-IAD data loader
+│   └── realiad_dataset.py     — PyTorch Dataset wrapper
+├── evaluation/
+│   ├── metrics.py             — I-AUROC, S-AUROC, P-AUROC, AUPRO
+│   ├── wga.py                 — Worst-Group Analysis
+│   └── visualisation.py      — Figures and anomaly map comparison
+├── models/
+│   ├── inp_former/            — INP-Former submodule (forked)
+│   └── trainer.py             — Unified training and inference
+├── notebooks/
+│   ├── 00_setup.ipynb         — Dataset download and preparation
+│   ├── 00b_mvtec_validation.ipynb — AnomalyDINO implementation check
+│   ├── 01_smoke_test.ipynb    — Pipeline validation
+│   ├── 02_standard_protocol.ipynb — Main benchmark (all 30 categories)
+│   ├── 03_crossview_protocol.ipynb — Viewpoint robustness
+│   ├── 04_ablation_study.ipynb — Systematic ablation investigations
+│   └── 05_analysis.ipynb      — Figures and tables for thesis
+└── results/                   — Saved scores, figures, anomaly maps
+
+---
+
+## Replication Steps
+
+1. Run `00_setup.ipynb` — download Real-IAD from HuggingFace
+2. Run `00b_mvtec_validation.ipynb` — validate AnomalyDINO on MVTec AD
+3. Run `02_standard_protocol.ipynb` — main experiment
+4. Run `03_crossview_protocol.ipynb` — cross-view robustness
+5. Run `04_ablation_study.ipynb` — ablation investigations
+6. Run `05_analysis.ipynb` — generate all thesis figures
+
+Each notebook has a USER CONFIGURATION block at the top.
+Set repo_path, dataset_root, and MAPS_SAVE_DIR before running.
+
+---
+
+## Key Implementation Notes
+
+- All three models use frozen DINOv2-Register ViT-Base/14 backbone
+- Dinomaly: dropout rate 0.4 and image score top 0.1% corrected for Real-IAD
+- INP-Former: official repo with path fixes for 512px Real-IAD
+- AnomalyDINO: ViT-Base/14 backbone (deviation from published ViT-Small,
+  justified for backbone-controlled paradigm comparison)
+- Anomaly maps saved as compressed numpy (.npz) for anomalous images only
+
+---
+
+## Requirements
+
+See `requirements.txt` for the full dependency list.
+
+Recommended environment: Google Colab with T4 or L4 GPU.
+Install dependencies with:
+```
 pip install -r requirements.txt
 ```
-
-## Dataset Setup
-
-This project uses the Real-IAD dataset (512px version) from Hugging Face.
-The dataset is publicly available — no account required.
-
-Dataset link: https://huggingface.co/datasets/Real-IAD/Real-IAD
-
-When running experiment notebooks the dataset will be downloaded automatically
-via the Hugging Face datasets library.
-
-
-## Hardware
-
-All experiments run on Google Colab for hardware-consistent comparisons. GPU tier subject to change based on computational requirements.
