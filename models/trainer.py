@@ -118,19 +118,13 @@ def train_dinomaly(
     ]
     print(f"Trainable parameters: {sum(p.numel() for p in trainable_params) / 1e6:.1f}M")
 
-    try:
-        from anomalib.models.image.dinomaly.torch_model import StableAdamW
-        optimizer = StableAdamW(
-            trainable_params,
-            lr=lr, betas=(0.9, 0.999),
-            weight_decay=1e-4, amsgrad=True, eps=1e-10
-        )
-    except ImportError:
-        optimizer = torch.optim.AdamW(
-            trainable_params,
-            lr=lr, betas=(0.9, 0.999), weight_decay=1e-4
-        )
-        print("Warning: StableAdamW not available, using AdamW")
+    optimizer = torch.optim.AdamW(
+        trainable_params,
+        lr=2e-3,
+        betas=(0.9, 0.999),
+        weight_decay=1e-4,
+        amsgrad=True
+    )
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=n_iterations, eta_min=lr * 0.1
@@ -240,8 +234,18 @@ def train_anomalydino(
             # Forward pass in train mode populates embedding_store automatically
             torch_model(images)
 
+    # Move embedding_store to CPU before stacking to avoid GPU OOM
+    torch_model.embedding_store = [
+    e.cpu() for e in torch_model.embedding_store
+    ]
+
+
     # Consolidate and subsample memory bank
     torch_model.fit()
+
+    # Move final coreset bank back to GPU for inference
+    torch_model.memory_bank = torch_model.memory_bank.to(device)
+
     print(f"Memory bank built: {torch_model.memory_bank.shape}")
 
     if save_path:
