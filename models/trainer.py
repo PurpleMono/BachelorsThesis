@@ -311,21 +311,34 @@ def train_inpformer(
     print(f"Training INP-Former on {len(normal_df)} normal images")
 
     # Use INP-Former's RealIADDataset with explicit dataset_root
-    dataset = RealIADDataset(
-        root=dataset_root,
-        category=normal_df['category'].iloc[0],
-        transform=data_transform,
-        gt_transform=None,
-        phase='train'
-    )
+    # Replace the single-category dataset with ConcatDataset across all categories
+    train_data_list = []
+    categories = normal_df['category'].unique()
+
+    for category in categories:
+        train_data = RealIADDataset(
+            root=dataset_root,
+            category=category,
+            transform=data_transform,
+            gt_transform=None,
+            phase='train'
+        )
+        train_data_list.append(train_data)
+
+    
+    from torch.utils.data import ConcatDataset
+    combined_dataset = ConcatDataset(train_data_list)
 
     loader = DataLoader(
-        dataset,
+        combined_dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=2,
         drop_last=True
     )
+
+    print(f"Training INP-Former on {len(combined_dataset)} normal images "
+        f"across {len(categories)} categories")
 
     # Build model — ViT-Base/14 with DINOv2-Register weights
     encoder = vit_encoder.load('dinov2reg_vit_base_14')
