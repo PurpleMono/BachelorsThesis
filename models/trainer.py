@@ -102,7 +102,7 @@ def train_dinomaly(
 
     # INP-Former repo provides WarmCosineScheduler and loss utilities
     _setup_inpformer_path(repo_path)
-    from utils import WarmCosineScheduler, global_cosine_hm_adaptive
+    from utils import WarmCosineScheduler
 
     RealIADTorchDataset = _load_dataset_class(repo_path)
 
@@ -168,19 +168,10 @@ def train_dinomaly(
 
             images = batch['image'].to(device)
 
-            # Forward pass in train mode returns dict with encoder/decoder
-            # features. global_step enables progressive hard mining in loss.
-            # During training: output is dict {'en': ..., 'de': ...}
-            # During inference: output is InferenceBatch
-            output = torch_model(images, global_step=global_step)
-            en = output['en']
-            de = output['de']
-
-            # Progressive hard mining loss matching official realiad_uni.py:
-            # p increases from 0 to 0.9 over first 1000 steps
-            # We use global_cosine_hm_adaptive from INP-Former utils which
-            # implements the same cosine similarity reconstruction loss
-            loss = global_cosine_hm_adaptive(en, de, y=3)
+            # Forward pass returns loss scalar directly during training.
+            # global_step enables progressive hard mining:
+            # discarding rate increases from 0% to 90% over first 1000 steps.
+            loss = torch_model(images, global_step=global_step)
 
             optimizer.zero_grad()
             loss.backward()
