@@ -211,25 +211,20 @@ def train_dinomaly(
 
     for epoch in range(int(np.ceil(n_iterations / len(loader)))):
         model.train()
-        for img, label in loader:
+        for batch in loader:
             if it >= n_iterations:
                 break
 
-            img = img.to(device)
+            img = batch['image'].to(device)
 
             en, de = model(img)
 
-            # Progressive hard mining matching realiad_uni.py exactly:
-            # p increases linearly from 0 to 0.9 over first 1000 steps,
-            # discarding the easiest (1-p) fraction of patch gradients
             p_final = 0.9
             p = min(p_final * it / 1000, p_final)
             loss = global_cosine_hm_percent(en, de, p=p, factor=0.1)
 
             optimizer.zero_grad()
             loss.backward()
-            # Note: official repo uses clip_grad_norm (no underscore) —
-            # this is the same function, just the older API alias
             nn.utils.clip_grad_norm_(trainable.parameters(), max_norm=0.1)
             optimizer.step()
             scheduler.step()
