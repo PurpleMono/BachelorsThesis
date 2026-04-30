@@ -19,6 +19,8 @@ Usage:
     model = train_dinomaly(train_cv_df, n_iterations=50000, device='cuda')
 """
 
+import gc
+
 import torch
 import torch.nn as nn
 import numpy as np
@@ -55,7 +57,7 @@ def _setup_inpformer_path(repo_path: str):
 
 def train_dinomaly(
     train_df: pd.DataFrame,
-    n_iterations: int = 100000,
+    n_iterations: int = 50000,
     batch_size: int = 16,
     lr: float = 2e-3,
     dropout_rate: float = 0.4,
@@ -64,26 +66,30 @@ def train_dinomaly(
     save_path: str = None,
 ) -> object:
     """
-    Train Dinomaly2 on normal images from train_df.
+    Train Dinomaly on normal images from train_df.
 
     Implements the official multi-class Dinomaly (realiad_uni.py) training
-    protocol with the Dinomaly2 Context-Aware Recentering extension, which
-    is available in Anomalib 2.3.3 via use_context_recentering=True.
+    protocol using Anomalib 2.4.0 as the model backend.
 
-    Published reference: Dinomaly2 achieves 92.1% I-AUROC on Real-IAD
-    multi-class setting (Guo et al., 2025 preprint).
+    Published reference: Dinomaly achieves 89.3% I-AUROC on Real-IAD
+    multi-class setting (Guo et al., CVPR 2025).
 
     Key implementation details matching official realiad_uni.py:
     - ConcatDataset across all 30 categories (multi-class)
-    - StableAdamW = AdamW with amsgrad=True, same parameters
+    - StableAdamW = AdamW with amsgrad=True
     - WarmCosineScheduler: warmup 100 steps, base_lr=2e-3, final_lr=2e-4
-    - Loss: global_cosine_hm_percent with progressive hard mining
-      p increases from 0 to 0.9 over first 1000 steps, factor=0.1
+    - Loss: CosineHardMiningLoss with progressive hard mining via global_step
     - dropout_rate=0.4 for diverse/multi-class datasets per paper
-    - Context-Aware Recentering: subtracts class token from patch features
-      to resolve multi-class confusion (Dinomaly2 contribution)
-    - Image score: top 0.1% pixels (max_ratio=0.001) for Real-IAD
-      which has tiny defects (specified in Dinomaly2 paper)
+    - use_context_recentering=False (original Dinomaly, not Dinomaly2)
+    - Image score: top 1% pixels (max_ratio=0.01) per official repo
+
+    Note: Context-Aware Recentering from Dinomaly2 was tested but produced
+    near-perfect reconstruction loss (0.013) indicating over-generalisation
+    when used without the full Dinomaly2 training framework. Original Dinomaly
+    is used to ensure comparability with the published 89.3% reference result.
+
+    A PyTorch 2.8 compatibility patch must be applied to Anomalib's
+    CosineHardMiningLoss before training (see notebook setup cell).
 
     Args:
         train_df:      dataframe from realiad_utils — normal images only
@@ -100,7 +106,7 @@ def train_dinomaly(
     """
     from anomalib.models import Dinomaly
 
-    # INP-Former repo provides WarmCosineScheduler and loss utilities
+    # WarmCosineScheduler from INP-Former repo matches official Dinomaly schedule
     _setup_inpformer_path(repo_path)
     from utils import WarmCosineScheduler
 
@@ -118,15 +124,14 @@ def train_dinomaly(
         drop_last=True
     )
 
-    # Dinomaly2 via Anomalib — context-aware recentering resolves
-    # multi-class confusion by conditioning features on class token
+    # Original Dinomaly — no context recentering
     model = Dinomaly(
-        bottleneck_dropout=dropout_rate,    # 0.4 for diverse datasets per paper
-        use_context_recentering=True        # Dinomaly2 multi-class component
+        bottleneck_dropout=dropout_rate,
+        use_context_recentering=False
     )
     torch_model = model.model.to(device)
     print(f"Noisy bottleneck dropout: {dropout_rate}")
-    print(f"Context-aware recentering: enabled (Dinomaly2)")
+    print(f"Context-aware recentering: disabled (original Dinomaly)")
 
     torch_model.train()
 
@@ -138,17 +143,17 @@ def train_dinomaly(
     print(f"Trainable parameters: "
           f"{sum(p.numel() for p in trainable_params) / 1e6:.1f}M")
 
-    # StableAdamW = AdamW with amsgrad=True — matches official implementation
+    # StableAdamW = AdamW with amsgrad=True per Reddi et al. 2018
     optimizer = torch.optim.AdamW(
         trainable_params,
         lr=lr,
         betas=(0.9, 0.999),
         weight_decay=1e-4,
-        amsgrad=True,    # this IS StableAdamW per Reddi et al. 2018
+        amsgrad=True,
         eps=1e-10
     )
 
-    # Warm cosine schedule matching official realiad_uni.py exactly
+    # Warm cosine schedule matching official realiad_uni.py
     scheduler = WarmCosineScheduler(
         optimizer,
         base_value=lr,          # 2e-3
@@ -169,8 +174,10 @@ def train_dinomaly(
             images = batch['image'].to(device)
 
             # Forward pass returns loss scalar directly during training.
-            # global_step enables progressive hard mining:
-            # discarding rate increases from 0% to 90% over first 1000 steps.
+            # global_step enables progressive hard mining in CosineHardMiningLoss:
+            # the fraction of well-reconstructed points whose gradients are
+            # suppressed increases from 0% to 90% over the first 1000 steps.
+            # Requires PyTorch 2.8 patch to CosineHardMiningLoss._modify_grad.
             loss = torch_model(images, global_step=global_step)
 
             optimizer.zero_grad()
@@ -209,15 +216,19 @@ def train_anomalydino(
     """
     Build AnomalyDINO memory bank from normal images in train_df.
 
-    AnomalyDINO is training-free — features are extracted from normal images
-    and stored in a memory bank via embedding_store then consolidated with fit().
+    AnomalyDINO is training-free — patch features from normal images are
+    extracted in a single forward pass and stored in an embedding_store,
+    which is then consolidated via K-Center Greedy coreset subsampling.
 
-    Coreset subsampling (ratio=0.1 per paper) reduces memory bank size.
-    For the multi-class setting with all 30 categories, the full memory bank
-    before subsampling would require ~87GB GPU VRAM. To avoid OOM, embeddings
-    are moved to CPU before the vstack operation, then the final coreset
-    bank is moved back to GPU for inference. Results are identical —
-    only the location of the stacking operation changes.
+    GPU OOM handling: with 30 categories at sampling_ratio=0.1, the full
+    unsubsampled memory bank (~87GB) exceeds GPU VRAM. Embeddings are moved
+    to CPU before the vstack consolidation step, then the final subsampled
+    coreset bank (~8,700 vectors) is moved back to GPU for inference.
+    This is mathematically identical — only the computation location changes.
+
+    IMPORTANT: Run AnomalyDINO in a fresh session before other models to
+    ensure maximum available system RAM for the CPU consolidation step.
+    The G4 GPU provides ~170GB system RAM which is sufficient.
 
     Args:
         train_df:       dataframe from realiad_utils — normal images only
@@ -260,13 +271,29 @@ def train_anomalydino(
             images = batch['image'].to(device)
             torch_model(images)
 
-    # Move to CPU before vstack to avoid OOM (~87GB for 30 categories at 0.1)
-    # Mathematically identical — only the computation location changes
+    # Verify embedding_store exists and has content before CPU move
+    if not hasattr(torch_model, 'embedding_store') or len(torch_model.embedding_store) == 0:
+        raise RuntimeError(
+            "embedding_store is empty after forward passes. "
+            "Check that torch_model is in train mode and AnomalyDINO "
+            "is populating embedding_store during forward pass."
+        )
+
+    print(f"Moving {len(torch_model.embedding_store)} embedding tensors to CPU...")
+
+    # Move to CPU before vstack — prevents GPU OOM during consolidation
+    # The unsubsampled bank for 30 categories exceeds GPU VRAM capacity
     torch_model.embedding_store = [
         e.cpu() for e in torch_model.embedding_store
     ]
 
-    # Consolidate and apply coreset subsampling on CPU
+    # Free GPU cache before CPU consolidation
+    torch.cuda.empty_cache()
+    gc.collect()
+
+    print("Running coreset subsampling on CPU...")
+    # fit() calls torch.vstack(embedding_store) then K-Center Greedy
+    # Both operations now happen in system RAM
     torch_model.fit()
 
     # Move final coreset bank back to GPU for fast nearest-neighbour inference
@@ -296,17 +323,18 @@ def train_inpformer(
     """
     Train INP-Former on normal images from train_df.
 
-    Uses original INP-Former repo with a standardised interface.
-    Follows published paper defaults: StableAdamW, lr=1e-3, 200 epochs.
+    Uses the official INP-Former repository (submodule at models/inp_former)
+    with a standardised interface. Follows published paper defaults for Real-IAD.
 
-    Multi-class training: all categories are combined via ConcatDataset
-    into a single training loader, matching the official multiclass.py script.
-    The WarmCosineScheduler total_iters is set to n_epochs * len(loader)
-    so reducing n_epochs automatically adjusts the schedule correctly —
-    important for the compute equalisation ablation (Investigation 2).
+    Multi-class training: all categories are combined via ConcatDataset into
+    a single training loader, matching the official multiclass.py script exactly.
+
+    The WarmCosineScheduler total_iters is set to n_epochs * len(loader) so
+    reducing n_epochs for the compute equalisation ablation (Investigation 2)
+    automatically adjusts the LR schedule to maintain correct cosine decay.
 
     Published reference: INP-Former achieves 92.1% I-AUROC on Real-IAD
-    multi-class setting (INP-Former paper, CVPR 2025).
+    multi-class setting (Luo et al., CVPR 2025).
 
     Args:
         train_df:      dataframe from realiad_utils — normal images only
@@ -364,7 +392,7 @@ def train_inpformer(
     print(f"Training INP-Former on {len(combined_dataset)} normal images "
           f"across {len(categories)} categories")
 
-    # Build model — ViT-Base/14 with DINOv2-Register weights (frozen)
+    # Build model — ViT-Base/14 with DINOv2-Register weights (encoder frozen)
     encoder = vit_encoder.load('dinov2reg_vit_base_14')
     embed_dim, num_heads = 768, 12
     target_layers = [2, 3, 4, 5, 6, 7, 8, 9]
@@ -413,8 +441,8 @@ def train_inpformer(
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-    # total_iters scales with n_epochs and loader length —
-    # reducing epochs for ablation automatically adjusts the LR schedule
+    # total_iters scales with n_epochs — reducing epochs for ablation
+    # automatically adjusts the cosine decay schedule correctly
     total_iters = n_epochs * len(loader)
 
     optimizer = StableAdamW(
@@ -500,7 +528,9 @@ def run_inference(
         device:            'cuda' or 'cpu'
         batch_size:        inference batch size (default: 16)
         repo_path:         path to BachelorsThesis repo
-        max_ratio:         top pixel ratio for image score (0.001 for Real-IAD)
+        max_ratio:         top pixel ratio for image score
+                           Dinomaly: 0.01 (top 1%) per official repo
+                           AnomalyDINO: not used
         save_anomaly_maps: whether to save anomaly maps to disk
         maps_save_dir:     root directory for saving maps
 
@@ -517,8 +547,8 @@ def run_inference(
         num_workers=2
     )
 
-    # Patch Dinomaly image score ratio for Real-IAD
-    # Dinomaly2 paper specifies top 0.1% for Real-IAD (tiny defects)
+    # Override Dinomaly's DEFAULT_MAX_RATIO if specified
+    # Official Dinomaly repo uses max_ratio=0.01 for Real-IAD
     if model_name == 'Dinomaly' and max_ratio is not None:
         import anomalib.models.image.dinomaly.torch_model as dinomaly_module
         original_ratio = dinomaly_module.DEFAULT_MAX_RATIO
@@ -556,7 +586,6 @@ def run_inference(
                 all_scores.append(score_val)
                 all_paths.append(path)
 
-                # Save anomaly map for anomalous images only
                 if save_anomaly_maps and maps_save_dir:
                     if path_to_label.get(path, -1) == 1:
                         category = path_to_category.get(path, 'unknown')
@@ -619,11 +648,14 @@ def run_inference_inpformer(
         anomaly_map:   float32 array (H, W)
         anomaly_score: float32 scalar
 
+    Image score: mean of top 1% pixels per official INP-Former evaluation.
+
     Args:
         model:             trained INP-Former model
         test_df:           dataframe with all test images (all categories)
-        dataset_root:      path to Real-IAD dataset root (unused — kept for
-                           API consistency with notebook calls)
+        dataset_root:      path to Real-IAD dataset root (kept for API
+                           consistency — not used since RealIADTorchDataset
+                           reads paths directly from test_df)
         device:            'cuda' or 'cpu'
         batch_size:        inference batch size (default: 16)
         repo_path:         path to BachelorsThesis repo
@@ -639,7 +671,6 @@ def run_inference_inpformer(
     from torch.nn import functional as F
 
     # Use our unified dataset class — accepts full multi-category test_df
-    # directly without requiring a category loop in the notebook
     RealIADTorchDataset = _load_dataset_class(repo_path)
     dataset = RealIADTorchDataset(test_df, load_masks=False)
     loader = DataLoader(
@@ -674,8 +705,7 @@ def run_inference_inpformer(
             output = model(img)
             en, de = output[0], output[1]
 
-            # Compute anomaly map via cosine similarity between
-            # encoder and decoder features, then apply Gaussian smoothing
+            # Anomaly map via cosine similarity between encoder and decoder
             anomaly_map, _ = cal_anomaly_maps(en, de, img.shape[-1])
             anomaly_map = F.interpolate(
                 anomaly_map, size=256,
@@ -695,7 +725,6 @@ def run_inference_inpformer(
                 all_scores.append(score_val)
                 all_paths.append(path)
 
-                # Save anomaly map for anomalous images only
                 if save_anomaly_maps and maps_save_dir:
                     if path_to_label.get(path, -1) == 1:
                         category = path_to_category.get(path, 'unknown')
@@ -742,15 +771,15 @@ def measure_inference_time(
     Measure inference time per image in milliseconds.
 
     Uses batch size 1 to simulate single-image deployment.
-    CUDA events are used for accurate GPU timing — more precise
-    than Python time.time() for GPU-bound operations.
+    CUDA events provide accurate GPU timing, more precise than
+    Python time.time() which includes Python overhead.
 
     Args:
         model:      trained model
         device:     'cuda' or 'cpu'
-        n_warmup:   warmup runs before timing (ensures GPU steady state)
+        n_warmup:   warmup runs to reach GPU steady state
         n_runs:     number of timed runs
-        image_size: input image size
+        image_size: input image size (default: 392)
 
     Returns:
         dict with mean_ms, std_ms, min_ms, max_ms
@@ -812,7 +841,7 @@ def measure_memory_footprint(
 if __name__ == '__main__':
     print("trainer.py loaded successfully")
     print("Available functions:")
-    print("  train_dinomaly(train_df, ...)              — Dinomaly2 multi-class")
+    print("  train_dinomaly(train_df, ...)              — Dinomaly multi-class (original)")
     print("  train_anomalydino(train_df, ...)           — AnomalyDINO memory bank")
     print("  train_inpformer(train_df, ...)             — INP-Former multi-class")
     print("  run_inference(model, test_df, ...)         — Dinomaly, AnomalyDINO")
