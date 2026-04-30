@@ -1,3 +1,6 @@
 [submodule "models/inp_former"]
 	path = models/inp_former
 	url = https://github.com/PurpleMono/INP-Former.git
+[submodule "models/dinomaly"]
+	path = models/dinomaly
+	url = https://github.com/guojiajeremy/Dinomaly
