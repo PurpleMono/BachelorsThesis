@@ -25,7 +25,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import pandas as pd
-from torch.utils.data import DataLoader, ConcatDataset
+from torch.utils.data import DataLoader, ConcatDataset, default_collate
 from tqdm import tqdm
 import importlib.util
 import sys
@@ -56,6 +56,30 @@ def _setup_dinomaly_path(repo_path: str):
     dinomaly_path = f"{repo_path}/models/dinomaly"
     if dinomaly_path not in sys.path:
         sys.path.insert(0, dinomaly_path)
+
+
+def _collate_fn(batch):
+    """
+    Custom collate for RealIADTorchDataset dicts.
+
+    RealIADTorchDataset returns dicts containing both tensors and strings.
+    PyTorch's default collate handles tensors but fails on string fields
+    when num_workers > 0. This collate keeps strings as lists and uses
+    default_collate for all tensor/numeric fields.
+    """
+    result = {}
+    for key in batch[0].keys():
+        vals = [b[key] for b in batch]
+        if isinstance(vals[0], str):
+            result[key] = vals
+        elif isinstance(vals[0], (bool, np.bool_)):
+            result[key] = vals
+        else:
+            try:
+                result[key] = default_collate(vals)
+            except Exception:
+                result[key] = vals
+    return result
 
 
 # =============================================================================
@@ -120,9 +144,6 @@ def train_dinomaly(
     torch.backends.cudnn.deterministic = False
     torch.backends.cudnn.benchmark = True
 
-    # Use our unified dataset — accepts filtered dataframe directly
-    # Cross-view: pass train_df filtered to C1+C2 from notebook
-    # Standard: pass full train_df
     RealIADTorchDataset = _load_dataset_class(repo_path)
     normal_df = train_df[train_df['label'] == 0].reset_index(drop=True)
 
@@ -131,8 +152,9 @@ def train_dinomaly(
         dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=0,
-        drop_last=True
+        num_workers=2,
+        drop_last=True,
+        collate_fn=_collate_fn
     )
 
     print(f"Training Dinomaly on {len(normal_df)} normal images "
@@ -170,10 +192,8 @@ def train_dinomaly(
         fuse_layer_decoder=fuse_layer_decoder
     ).to(device)
 
-    # Only bottleneck and decoder are trained — encoder is frozen DINOv2
     trainable = nn.ModuleList([bottleneck, decoder])
 
-    # Weight initialisation matching realiad_uni.py exactly
     for m in trainable.modules():
         if isinstance(m, nn.Linear):
             trunc_normal_(m.weight, std=0.01, a=-0.03, b=0.03)
@@ -186,7 +206,6 @@ def train_dinomaly(
     print(f"Trainable parameters: "
           f"{sum(p.numel() for p in trainable.parameters()) / 1e6:.1f}M")
 
-    # StableAdamW matches official optimizers/StableAdamW.py
     optimizer = StableAdamW(
         [{'params': trainable.parameters()}],
         lr=lr,
@@ -196,18 +215,18 @@ def train_dinomaly(
         eps=1e-10
     )
 
-    # Warm cosine schedule matching official realiad_uni.py exactly
     scheduler = WarmCosineScheduler(
         optimizer,
-        base_value=lr,          # 2e-3
-        final_value=lr * 0.1,   # 2e-4
+        base_value=lr,
+        final_value=lr * 0.1,
         total_iters=n_iterations,
         warmup_iters=100
     )
 
     it = 0
     loss_history = []
-    pbar = tqdm(total=n_iterations, desc="Training Dinomaly")
+    pbar = tqdm(total=n_iterations, desc="Training Dinomaly",
+                dynamic_ncols=True, leave=True)
 
     for epoch in range(int(np.ceil(n_iterations / len(loader)))):
         model.train()
@@ -219,6 +238,7 @@ def train_dinomaly(
 
             en, de = model(img)
 
+            # Progressive hard mining matching realiad_uni.py exactly
             p_final = 0.9
             p = min(p_final * it / 1000, p_final)
             loss = global_cosine_hm_percent(en, de, p=p, factor=0.1)
@@ -269,32 +289,28 @@ def train_anomalydino_fewshot(
     exceeded GPU VRAM during coreset consolidation, which is consistent
     with the paper's primary evaluation being the few-shot setting.
 
-    head(n_shots) selects the first n images per category per viewpoint
-    in dataframe order, equivalent to Run 1 of the paper's 16-shot protocol
-    (images 1 to 16 per category).
+    Coreset subsampling is disabled — at 2,400 images the memory bank
+    is small enough that subsampling would discard a meaningful fraction
+    of the already limited reference set.
 
     GPU memory strategy: the entire torch_model is moved to CPU before
-    fit() so that vstack and K-Center Greedy coreset subsampling run
-    entirely in system RAM. The final coreset bank is moved back to GPU
-    for inference. This is mathematically identical — only the computation
-    location changes.
+    fit() so that vstack and nearest-neighbour search run entirely in
+    system RAM. The final memory bank is moved back to GPU for inference.
 
     Args:
-        train_df:       dataframe from realiad_utils — normal images only
-        n_shots:        reference images per category per viewpoint (default: 16)
-        device:         'cuda' or 'cpu'
-        repo_path:      path to BachelorsThesis repo
-        save_path:      optional path to save memory bank
-        sampling_ratio: coreset subsampling ratio (default: 0.1 per paper)
+        train_df:   dataframe from realiad_utils — normal images only
+        n_shots:    reference images per category per viewpoint (default: 16)
+        device:     'cuda' or 'cpu'
+        repo_path:  path to BachelorsThesis repo
+        save_path:  optional path to save memory bank
 
     Returns:
-        AnomalyDINO model with populated and subsampled memory bank
+        AnomalyDINO model with populated memory bank
     """
     from anomalib.models import AnomalyDINO
 
     RealIADTorchDataset = _load_dataset_class(repo_path)
 
-    # Select n_shots per category per viewpoint
     normal_df = train_df[train_df['label'] == 0].reset_index(drop=True)
 
     shot_dfs = []
@@ -311,31 +327,30 @@ def train_anomalydino_fewshot(
     print(f"  {n_shots} shots x "
           f"{normal_df['category'].nunique()} categories x "
           f"{normal_df['viewpoint'].nunique()} viewpoints")
-    print(f"Coreset sampling ratio: {sampling_ratio}")
 
     dataset = RealIADTorchDataset(fewshot_df, load_masks=False)
     loader = DataLoader(
         dataset,
         batch_size=32,
         shuffle=False,
-        num_workers=2
+        num_workers=2,
+        collate_fn=_collate_fn
     )
 
     model = AnomalyDINO(
         encoder_name='dinov2reg_vit_base_14',
-        coreset_subsampling=False,  # not needed for few-shot — bank is small
+        coreset_subsampling=False,
         masking=False,
     )
     torch_model = model.model.to(device)
     torch_model.train()
 
-    # Extract patch features into embedding_store on GPU
     with torch.no_grad():
-        for batch in tqdm(loader, desc="Building few-shot memory bank"):
+        for batch in tqdm(loader, desc="Building few-shot memory bank",
+                          dynamic_ncols=True, leave=True):
             images = batch['image'].to(device)
             torch_model(images)
 
-    # Verify embedding_store has content
     if not hasattr(torch_model, 'embedding_store') or \
             len(torch_model.embedding_store) == 0:
         raise RuntimeError(
@@ -346,20 +361,15 @@ def train_anomalydino_fewshot(
     print(f"Moving {len(torch_model.embedding_store)} "
           f"embedding tensors to CPU...")
 
-    # Move embeddings to CPU
     torch_model.embedding_store = [
         e.cpu() for e in torch_model.embedding_store
     ]
     torch.cuda.empty_cache()
     gc.collect()
 
-    # Move entire model to CPU so fit() runs fully in system RAM —
-    # this ensures vstack and K-Center Greedy both run off-GPU
-    print("Running coreset subsampling on CPU...")
+    print("Running memory bank consolidation on CPU...")
     torch_model.to('cpu')
     torch_model.fit()
-
-    # Move final coreset bank back to GPU for fast nearest-neighbour inference
     torch_model.to(device)
     torch_model.memory_bank = torch_model.memory_bank.to(device)
     print(f"Memory bank built: {torch_model.memory_bank.shape}")
@@ -435,8 +445,6 @@ def train_inpformer(
 
     normal_df = train_df[train_df['label'] == 0].reset_index(drop=True)
 
-    # Multi-class: combine all categories into one ConcatDataset
-    # matching official multiclass.py — one model trained on all categories
     train_data_list = []
     categories = normal_df['category'].unique()
     for category in categories:
@@ -461,7 +469,6 @@ def train_inpformer(
     print(f"Training INP-Former on {len(combined_dataset)} normal images "
           f"across {len(categories)} categories")
 
-    # Build model — ViT-Base/14 with DINOv2-Register weights (encoder frozen)
     encoder = vit_encoder.load('dinov2reg_vit_base_14')
     embed_dim, num_heads = 768, 12
     target_layers = [2, 3, 4, 5, 6, 7, 8, 9]
@@ -496,11 +503,9 @@ def train_inpformer(
         prototype_token=INP
     ).to(device)
 
-    # Only bottleneck, decoder, extractor, and INP tokens are trained
     trainable = nn.ModuleList(
         [Bottleneck, INP_Guided_Decoder, INP_Extractor, INP])
 
-    # Weight initialisation matching official multiclass.py
     for m in trainable.modules():
         if isinstance(m, nn.Linear):
             trunc_normal_(m.weight, std=0.01, a=-0.03, b=0.03)
@@ -510,7 +515,6 @@ def train_inpformer(
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-    # total_iters scales with n_epochs — schedule adjusts automatically
     total_iters = n_epochs * len(loader)
 
     optimizer = StableAdamW(
@@ -533,7 +537,8 @@ def train_inpformer(
         model.train()
         loss_list = []
         for img, _ in tqdm(
-                loader, ncols=80, desc=f"Epoch {epoch+1}/{n_epochs}"):
+                loader, ncols=80, desc=f"Epoch {epoch+1}/{n_epochs}",
+                dynamic_ncols=True, leave=False):
             img = img.to(device)
             en, de, g_loss = model(img)
             loss = global_cosine_hm_adaptive(en, de, y=3)
@@ -597,14 +602,14 @@ def run_inference_dinomaly(
     from utils import get_gaussian_kernel, cal_anomaly_maps
     from torch.nn import functional as F
 
-    # Use our unified dataset class for consistent interface
     RealIADTorchDataset = _load_dataset_class(repo_path)
     dataset = RealIADTorchDataset(test_df, load_masks=False)
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=2
+        num_workers=2,
+        collate_fn=_collate_fn
     )
 
     model.eval()
@@ -623,20 +628,19 @@ def run_inference_dinomaly(
     all_paths = []
 
     with torch.no_grad():
-        for batch in tqdm(loader, desc="Inference [Dinomaly]"):
+        for batch in tqdm(loader, desc="Inference [Dinomaly]",
+                          dynamic_ncols=True, leave=True):
             img = batch['image'].to(device)
             img_paths = batch['image_path']
 
             en, de = model(img)
 
-            # Anomaly map via cosine similarity between encoder and decoder
             anomaly_map, _ = cal_anomaly_maps(en, de, img.shape[-1])
             anomaly_map = F.interpolate(
                 anomaly_map, size=256,
                 mode='bilinear', align_corners=False)
             anomaly_map = gaussian_kernel(anomaly_map)
 
-            # Image score: mean of top 1% pixels per official repo
             flat = anomaly_map.flatten(1)
             k = max(1, int(flat.shape[1] * 0.01))
             scores = torch.topk(flat, k, dim=1)[0].mean(dim=1)
@@ -693,15 +697,6 @@ def run_inference(
     Run inference on test_df and return results dataframe.
     Used for AnomalyDINO (Anomalib-based model).
 
-    Anomaly maps are optionally saved as compressed numpy files (.npz).
-    Only anomalous images (label == 1) are saved to minimise storage.
-
-    File structure:
-        {maps_save_dir}/{model_name}/{category}/{image_stem}.npz
-    Each .npz contains:
-        anomaly_map:   float32 array (H, W)
-        anomaly_score: float32 scalar
-
     Args:
         model:             trained model
         test_df:           dataframe with all test images
@@ -709,7 +704,7 @@ def run_inference(
         device:            'cuda' or 'cpu'
         batch_size:        inference batch size (default: 16)
         repo_path:         path to BachelorsThesis repo
-        max_ratio:         top pixel ratio for image score (unused for AnomalyDINO)
+        max_ratio:         unused for AnomalyDINO — kept for API consistency
         save_anomaly_maps: whether to save anomaly maps to disk
         maps_save_dir:     root directory for saving maps
 
@@ -723,7 +718,8 @@ def run_inference(
         dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=2
+        num_workers=2,
+        collate_fn=_collate_fn
     )
 
     model.eval()
@@ -743,7 +739,8 @@ def run_inference(
     )) if 'category' in test_df.columns else {}
 
     with torch.no_grad():
-        for batch in tqdm(loader, desc=f"Inference [{model_name}]"):
+        for batch in tqdm(loader, desc=f"Inference [{model_name}]",
+                          dynamic_ncols=True, leave=True):
             images = batch['image'].to(device)
             output = model(images)
             scores = output.pred_score.cpu().numpy().flatten()
@@ -800,17 +797,7 @@ def run_inference_inpformer(
     Run INP-Former inference on test_df and return results dataframe.
 
     Uses RealIADTorchDataset (our unified dataset class) to accept the
-    full multi-category test_df directly — no category loop needed in
-    the notebook.
-
-    Anomaly maps are optionally saved as compressed numpy files (.npz).
-    Only anomalous images (label == 1) are saved to minimise storage.
-
-    File structure:
-        {maps_save_dir}/INP-Former/{category}/{image_stem}.npz
-    Each .npz contains:
-        anomaly_map:   float32 array (H, W)
-        anomaly_score: float32 scalar
+    full multi-category test_df directly — no category loop needed.
 
     Image score: mean of top 1% pixels per official INP-Former evaluation.
 
@@ -838,7 +825,8 @@ def run_inference_inpformer(
         dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=2
+        num_workers=2,
+        collate_fn=_collate_fn
     )
 
     model.eval()
@@ -858,7 +846,8 @@ def run_inference_inpformer(
     all_paths = []
 
     with torch.no_grad():
-        for batch in tqdm(loader, desc="Inference [INP-Former]"):
+        for batch in tqdm(loader, desc="Inference [INP-Former]",
+                          dynamic_ncols=True, leave=True):
             img = batch['image'].to(device)
             img_paths = batch['image_path']
 
@@ -929,8 +918,7 @@ def measure_inference_time(
     Measure inference time per image in milliseconds.
 
     Uses batch size 1 to simulate single-image deployment.
-    CUDA events provide accurate GPU timing, more precise than
-    Python time.time() which includes Python overhead.
+    CUDA events provide accurate GPU timing.
 
     Args:
         model:      trained model
@@ -999,11 +987,11 @@ def measure_memory_footprint(
 if __name__ == '__main__':
     print("trainer.py loaded successfully")
     print("Available functions:")
-    print("  train_dinomaly(train_df, ...)              — Dinomaly (official repo)")
-    print("  train_anomalydino_fewshot(train_df, ...)   — AnomalyDINO 16-shot")
-    print("  train_inpformer(train_df, ...)             — INP-Former multi-class")
+    print("  train_dinomaly(train_df, ...)               — Dinomaly (official repo)")
+    print("  train_anomalydino_fewshot(train_df, ...)    — AnomalyDINO 16-shot")
+    print("  train_inpformer(train_df, ...)              — INP-Former multi-class")
     print("  run_inference_dinomaly(model, test_df, ...) — Dinomaly")
-    print("  run_inference(model, test_df, ...)         — AnomalyDINO")
+    print("  run_inference(model, test_df, ...)          — AnomalyDINO")
     print("  run_inference_inpformer(model, test_df, ...) — INP-Former")
     print("  measure_inference_time(model, ...)")
     print("  measure_memory_footprint(model, ...)")
