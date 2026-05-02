@@ -191,17 +191,29 @@ def load_realiad_all(
 def get_crossview_split(
     df: pd.DataFrame,
     train_views: list = ['C1', 'C2'],
-    test_views: list = ['C3', 'C4', 'C5']
+    test_views: list = ['C1', 'C2', 'C3', 'C4', 'C5']
 ) -> tuple:
     """
-    Split dataframe into train/test sets by viewpoint.
-    Used for the cross-viewpoint robustness protocol.
+    Split dataframe into train/test sets by viewpoint,
+    respecting the official train/test split.
+
+    Training set: official train split, filtered to train_views only.
+    Test set: official test split, all viewpoints.
+
     Normal-only filtering for model training happens in the notebooks.
     """
-    train_df = df[df['viewpoint'].isin(train_views)].reset_index(drop=True)
-    test_df = df[df['viewpoint'].isin(test_views)].reset_index(drop=True)
-    print(f"Cross-view split: train={len(train_df)} {train_views} | "
-          f"test={len(test_df)} {test_views}")
+    train_df = df[
+        (df['split'] == 'train') &
+        (df['viewpoint'].isin(train_views))
+    ].reset_index(drop=True)
+
+    test_df = df[
+        df['split'] == 'test'
+    ].reset_index(drop=True)
+
+    print(f"Cross-view split:")
+    print(f"  Train: {len(train_df)} images | viewpoints {train_views} | official train split only")
+    print(f"  Test:  {len(test_df)} images | all viewpoints | official test split only")
     return train_df, test_df
 
 
