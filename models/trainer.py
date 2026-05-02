@@ -130,6 +130,12 @@ def train_dinomaly(
     Returns:
         Trained ViTill model ready for inference via run_inference_dinomaly()
     """
+    # Clear cached module imports that may point to Dinomaly's modules
+    import sys
+    for key in list(sys.modules.keys()):
+        if key.startswith('models') or key in ('utils', 'dataset', 'optimizers'):
+            del sys.modules[key]
+
     _setup_dinomaly_path(repo_path)
 
     from models.uad import ViTill
@@ -432,6 +438,12 @@ def train_inpformer(
     Returns:
         Trained INP-Former model ready for inference via run_inference_inpformer()
     """
+    # Clear cached module imports that may point to Dinomaly's modules
+    import sys
+    for key in list(sys.modules.keys()):
+        if key.startswith('models') or key in ('utils', 'dataset', 'optimizers'):
+            del sys.modules[key]
+
     _setup_inpformer_path(repo_path)
 
     from models import vit_encoder
