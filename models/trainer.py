@@ -45,17 +45,20 @@ def _load_dataset_class(repo_path: str):
 
 
 def _setup_inpformer_path(repo_path: str):
-    """Add INP-Former to sys.path if not already there."""
+    """Add INP-Former to sys.path at position 0, before Dinomaly."""
     inp_former_path = f"{repo_path}/models/inp_former"
-    if inp_former_path not in sys.path:
-        sys.path.insert(0, inp_former_path)
+    # Remove if already present to ensure it stays at position 0
+    if inp_former_path in sys.path:
+        sys.path.remove(inp_former_path)
+    sys.path.insert(0, inp_former_path)
 
 
 def _setup_dinomaly_path(repo_path: str):
-    """Add official Dinomaly repo to sys.path if not already there."""
+    """Add official Dinomaly repo to sys.path at position 0."""
     dinomaly_path = f"{repo_path}/models/dinomaly"
-    if dinomaly_path not in sys.path:
-        sys.path.insert(0, dinomaly_path)
+    if dinomaly_path in sys.path:
+        sys.path.remove(dinomaly_path)
+    sys.path.insert(0, dinomaly_path)
 
 
 def _collate_fn(batch):
