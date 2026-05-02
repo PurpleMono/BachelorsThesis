@@ -416,8 +416,12 @@ def train_inpformer(
     100 epochs, making the training duration a scientific variable rather
     than an unexamined constraint.
 
-    Multi-class training: all categories are combined via ConcatDataset into
-    a single training loader, matching the official multiclass.py script.
+    Uses RealIADTorchDataset (our unified loader) rather than the INP-Former
+    repo's RealIADDataset, so the cross-view protocol works correctly by
+    passing a filtered train_df — no changes to this function needed between
+    protocols. Preprocessing is identical: 448 resize, 392 centre crop,
+    ImageNet normalisation.
+
     The WarmCosineScheduler total_iters = n_epochs * len(loader), so
     reducing n_epochs automatically adjusts the LR schedule correctly.
 
@@ -426,7 +430,7 @@ def train_inpformer(
 
     Args:
         train_df:      dataframe from realiad_utils — normal images only
-        dataset_root:  path to Real-IAD dataset root (contains category folders)
+        dataset_root:  unused — kept for API consistency
         n_epochs:      number of training epochs (default: 100)
         batch_size:    training batch size (default: 16 per paper)
         lr:            learning rate (default: 1e-3 per paper)
@@ -439,7 +443,6 @@ def train_inpformer(
         Trained INP-Former model ready for inference via run_inference_inpformer()
     """
     # Clear cached module imports that may point to Dinomaly's modules
-    import sys
     for key in list(sys.modules.keys()):
         if key.startswith('models') or key in ('utils', 'dataset', 'optimizers'):
             del sys.modules[key]
@@ -451,38 +454,27 @@ def train_inpformer(
     from models.vision_transformer import Mlp, Aggregation_Block, Prototype_Block
     from optimizers import StableAdamW
     from utils import WarmCosineScheduler, global_cosine_hm_adaptive, setup_seed
-    from dataset import RealIADDataset, get_data_transforms
     from torch.nn.init import trunc_normal_
 
     setup_seed(1)
 
-    data_transform, _ = get_data_transforms(448, 392)
-
+    # Use our unified dataset — accepts filtered dataframe directly
+    # Cross-view: pass train_df filtered to C1+C2 from notebook
+    # Standard: pass full train_df
+    RealIADTorchDataset = _load_dataset_class(repo_path)
     normal_df = train_df[train_df['label'] == 0].reset_index(drop=True)
-
-    train_data_list = []
-    categories = normal_df['category'].unique()
-    for category in categories:
-        train_data = RealIADDataset(
-            root=dataset_root,
-            category=category,
-            transform=data_transform,
-            gt_transform=None,
-            phase='train'
-        )
-        train_data_list.append(train_data)
-
-    combined_dataset = ConcatDataset(train_data_list)
+    dataset = RealIADTorchDataset(normal_df, load_masks=False)
     loader = DataLoader(
-        combined_dataset,
+        dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=2,
-        drop_last=True
+        drop_last=True,
+        collate_fn=_collate_fn
     )
 
-    print(f"Training INP-Former on {len(combined_dataset)} normal images "
-          f"across {len(categories)} categories")
+    print(f"Training INP-Former on {len(normal_df)} normal images "
+          f"across {normal_df['category'].nunique()} categories")
 
     encoder = vit_encoder.load('dinov2reg_vit_base_14')
     embed_dim, num_heads = 768, 12
@@ -530,6 +522,8 @@ def train_inpformer(
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
+    # total_iters scales with n_epochs — schedule adjusts automatically
+    # reducing epochs for cross-view or ablation correctly adjusts LR decay
     total_iters = n_epochs * len(loader)
 
     optimizer = StableAdamW(
@@ -551,10 +545,10 @@ def train_inpformer(
     for epoch in range(n_epochs):
         model.train()
         loss_list = []
-        for img, _ in tqdm(
+        for batch in tqdm(
                 loader, ncols=80, desc=f"Epoch {epoch+1}/{n_epochs}",
                 dynamic_ncols=True, leave=False):
-            img = img.to(device)
+            img = batch['image'].to(device)
             en, de, g_loss = model(img)
             loss = global_cosine_hm_adaptive(en, de, y=3)
             loss = loss + 0.2 * g_loss
@@ -578,7 +572,6 @@ def train_inpformer(
         print(f"Weights saved to {save_path}")
 
     return model
-
 
 # =============================================================================
 # SECTION 2: INFERENCE FUNCTIONS
