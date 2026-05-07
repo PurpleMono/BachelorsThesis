@@ -290,36 +290,36 @@ def train_anomalydino_fewshot(
     """
     Build AnomalyDINO memory bank using n_shots normal images per
     category per viewpoint, following the few-shot evaluation protocol
-    from Hofer et al. (2025).
-
+    from Damm et al. (2025).
     16 shots x 30 categories x 5 viewpoints = 2,400 training images.
     This is the setting for which AnomalyDINO was designed and validated
     in the original paper. The full multi-class setting (36,465 images)
-    exceeded GPU VRAM during coreset consolidation, which is consistent
-    with the paper's primary evaluation being the few-shot setting.
-
+    exceeded available GPU memory during memory bank consolidation, which
+    is consistent with the method's intended use as a few-shot approach.
     Coreset subsampling is disabled — at 2,400 images the memory bank
     is small enough that subsampling would discard a meaningful fraction
     of the already limited reference set.
-
     GPU memory strategy: the entire torch_model is moved to CPU before
-    fit() so that vstack and nearest-neighbour search run entirely in
-    system RAM. The final memory bank is moved back to GPU for inference.
-
+    fit() so that vstack runs in system RAM. The memory bank is then
+    L2-normalized and moved back to GPU for inference.
+    Note: explicit L2 normalization of the memory bank after fit() is
+    required for correct cosine distance scoring. The Anomalib forward
+    pass normalizes query features at inference time but does not
+    normalize the memory bank during fit(), causing near-random scores
+    if this step is omitted.
     Args:
         train_df:   dataframe from realiad_utils — normal images only
         n_shots:    reference images per category per viewpoint (default: 16)
         device:     'cuda' or 'cpu'
         repo_path:  path to BachelorsThesis repo
         save_path:  optional path to save memory bank
-
     Returns:
         AnomalyDINO model with populated memory bank
     """
     from anomalib.models import AnomalyDINO
+    import torch.nn.functional as F
 
     RealIADTorchDataset = _load_dataset_class(repo_path)
-
     normal_df = train_df[train_df['label'] == 0].reset_index(drop=True)
 
     shot_dfs = []
@@ -369,7 +369,6 @@ def train_anomalydino_fewshot(
 
     print(f"Moving {len(torch_model.embedding_store)} "
           f"embedding tensors to CPU...")
-
     torch_model.embedding_store = [
         e.cpu() for e in torch_model.embedding_store
     ]
@@ -379,6 +378,13 @@ def train_anomalydino_fewshot(
     print("Running memory bank consolidation on CPU...")
     torch_model.to('cpu')
     torch_model.fit()
+
+    # L2-normalize memory bank to match inference-time feature normalization
+    # Required for correct cosine distance scoring — omitting this causes
+    # near-random I-AUROC regardless of memory bank quality
+    torch_model.memory_bank = F.normalize(
+        torch_model.memory_bank, p=2, dim=1)
+
     torch_model.to(device)
     torch_model.memory_bank = torch_model.memory_bank.to(device)
     print(f"Memory bank built: {torch_model.memory_bank.shape}")
