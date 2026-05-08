@@ -707,7 +707,29 @@ def run_inference(
     save_anomaly_maps: bool = False,
     maps_save_dir: str = None,
 ) -> pd.DataFrame:
+    """
+    Run inference on test_df and return results dataframe.
+    Used for AnomalyDINO (Anomalib-based model).
 
+    Iterates category by category for clean GPU memory management.
+    Anomaly maps are saved to local disk first then copied to Drive
+    in bulk after each category to avoid Drive FUSE write latency.
+
+    Args:
+        model:             trained model
+        test_df:           dataframe with all test images
+        model_name:        'AnomalyDINO'
+        device:            'cuda' or 'cpu'
+        batch_size:        inference batch size (default: 16)
+        repo_path:         path to BachelorsThesis repo
+        max_ratio:         unused for AnomalyDINO — kept for API consistency
+        save_anomaly_maps: whether to save anomaly maps to disk
+        maps_save_dir:     root directory for saving maps
+
+    Returns:
+        DataFrame with all original columns plus image_score and model
+    """
+    import shutil
     RealIADTorchDataset = _load_dataset_class(repo_path)
 
     path_to_label = dict(zip(
@@ -725,13 +747,14 @@ def run_inference(
 
     all_results = []
 
-    # Iterate category by category for clean memory slate per category
-    categories = test_df['category'].unique() if 'category' in test_df.columns \
-        else [None]
+    categories = test_df['category'].unique().tolist() \
+        if 'category' in test_df.columns else [None]
 
     for cat in categories:
         if cat is not None:
-            cat_df = test_df[test_df['category'] == cat].reset_index(drop=True)
+            cat_df = test_df[
+                test_df['category'] == cat
+            ].reset_index(drop=True)
         else:
             cat_df = test_df.reset_index(drop=True)
 
@@ -743,6 +766,11 @@ def run_inference(
             num_workers=2,
             collate_fn=_collate_fn
         )
+
+        # Local temp directory for fast map writes
+        local_maps_dir = f'/content/tmp_maps/{model_name}/{cat}'
+        if save_anomaly_maps and maps_save_dir:
+            os.makedirs(local_maps_dir, exist_ok=True)
 
         cat_scores = []
         cat_paths = []
@@ -767,18 +795,26 @@ def run_inference(
 
                     if save_anomaly_maps and maps_save_dir:
                         if path_to_label.get(path, -1) == 1:
-                            save_dir = os.path.join(
-                                maps_save_dir, model_name, cat)
-                            os.makedirs(save_dir, exist_ok=True)
                             stem = os.path.splitext(
                                 os.path.basename(path))[0]
                             np.savez_compressed(
-                                os.path.join(save_dir, f"{stem}.npz"),
+                                os.path.join(
+                                    local_maps_dir, f"{stem}.npz"),
                                 anomaly_map=amap[0].astype(np.float32),
                                 anomaly_score=np.float32(score_val)
                             )
 
-        # Build category results and append
+        # Copy maps from local disk to Drive in bulk
+        if save_anomaly_maps and maps_save_dir:
+            drive_cat_dir = os.path.join(
+                maps_save_dir, model_name, cat)
+            os.makedirs(drive_cat_dir, exist_ok=True)
+            shutil.copytree(
+                local_maps_dir, drive_cat_dir, dirs_exist_ok=True)
+            shutil.rmtree(local_maps_dir)
+            print(f'  Maps copied to Drive: {drive_cat_dir}')
+
+        # Build category results
         cat_result_df = cat_df.copy()
         path_to_score = dict(zip(cat_paths, cat_scores))
         cat_result_df['image_score'] = cat_result_df['image_path'].map(
@@ -786,11 +822,11 @@ def run_inference(
         cat_result_df['model'] = model_name
         all_results.append(cat_result_df)
 
-        # Clean up after each category
+        # Clean GPU cache between categories
         torch.cuda.empty_cache()
         gc.collect()
 
-    # Combine all categories into one dataframe
+    # Combine all categories
     results_df = pd.concat(all_results, ignore_index=True)
 
     print(f"\n{model_name} inference complete")
