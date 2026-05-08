@@ -707,41 +707,8 @@ def run_inference(
     save_anomaly_maps: bool = False,
     maps_save_dir: str = None,
 ) -> pd.DataFrame:
-    """
-    Run inference on test_df and return results dataframe.
-    Used for AnomalyDINO (Anomalib-based model).
 
-    Args:
-        model:             trained model
-        test_df:           dataframe with all test images
-        model_name:        'AnomalyDINO'
-        device:            'cuda' or 'cpu'
-        batch_size:        inference batch size (default: 16)
-        repo_path:         path to BachelorsThesis repo
-        max_ratio:         unused for AnomalyDINO — kept for API consistency
-        save_anomaly_maps: whether to save anomaly maps to disk
-        maps_save_dir:     root directory for saving maps
-
-    Returns:
-        DataFrame with all original columns plus image_score and model
-    """
     RealIADTorchDataset = _load_dataset_class(repo_path)
-
-    dataset = RealIADTorchDataset(test_df, load_masks=True)
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=2,
-        collate_fn=_collate_fn
-    )
-
-    model.eval()
-    if hasattr(model, 'model'):
-        model.model.eval()
-
-    all_scores = []
-    all_paths = []
 
     path_to_label = dict(zip(
         test_df['image_path'].tolist(),
@@ -752,38 +719,79 @@ def run_inference(
         test_df['category'].tolist()
     )) if 'category' in test_df.columns else {}
 
-    with torch.no_grad():
-        for batch in tqdm(loader, desc=f"Inference [{model_name}]",
-                          dynamic_ncols=True, leave=True):
-            images = batch['image'].to(device)
-            output = model.model(images)
-            scores = output.pred_score.cpu().numpy().flatten()
-            amaps = output.anomaly_map.cpu().numpy()
+    model.eval()
+    if hasattr(model, 'model'):
+        model.model.eval()
 
-            for score, path, amap in zip(
-                    scores, batch['image_path'], amaps):
-                score_val = float(score)
-                all_scores.append(score_val)
-                all_paths.append(path)
+    all_results = []
 
-                if save_anomaly_maps and maps_save_dir:
-                    if path_to_label.get(path, -1) == 1:
-                        category = path_to_category.get(path, 'unknown')
-                        save_dir = os.path.join(
-                            maps_save_dir, model_name, category)
-                        os.makedirs(save_dir, exist_ok=True)
-                        stem = os.path.splitext(
-                            os.path.basename(path))[0]
-                        np.savez_compressed(
-                            os.path.join(save_dir, f"{stem}.npz"),
-                            anomaly_map=amap[0].astype(np.float32),
-                            anomaly_score=np.float32(score_val)
-                        )
+    # Iterate category by category for clean memory slate per category
+    categories = test_df['category'].unique() if 'category' in test_df.columns \
+        else [None]
 
-    results_df = test_df.copy()
-    path_to_score = dict(zip(all_paths, all_scores))
-    results_df['image_score'] = results_df['image_path'].map(path_to_score)
-    results_df['model'] = model_name
+    for cat in categories:
+        if cat is not None:
+            cat_df = test_df[test_df['category'] == cat].reset_index(drop=True)
+        else:
+            cat_df = test_df.reset_index(drop=True)
+
+        dataset = RealIADTorchDataset(cat_df, load_masks=True)
+        loader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=2,
+            collate_fn=_collate_fn
+        )
+
+        cat_scores = []
+        cat_paths = []
+
+        with torch.no_grad():
+            for batch in tqdm(
+                loader,
+                desc=f"Inference [{model_name}] {cat}",
+                dynamic_ncols=True,
+                leave=False
+            ):
+                images = batch['image'].to(device)
+                output = model.model(images)
+                scores = output.pred_score.cpu().numpy().flatten()
+                amaps = output.anomaly_map.cpu().numpy()
+
+                for score, path, amap in zip(
+                        scores, batch['image_path'], amaps):
+                    score_val = float(score)
+                    cat_scores.append(score_val)
+                    cat_paths.append(path)
+
+                    if save_anomaly_maps and maps_save_dir:
+                        if path_to_label.get(path, -1) == 1:
+                            save_dir = os.path.join(
+                                maps_save_dir, model_name, cat)
+                            os.makedirs(save_dir, exist_ok=True)
+                            stem = os.path.splitext(
+                                os.path.basename(path))[0]
+                            np.savez_compressed(
+                                os.path.join(save_dir, f"{stem}.npz"),
+                                anomaly_map=amap[0].astype(np.float32),
+                                anomaly_score=np.float32(score_val)
+                            )
+
+        # Build category results and append
+        cat_result_df = cat_df.copy()
+        path_to_score = dict(zip(cat_paths, cat_scores))
+        cat_result_df['image_score'] = cat_result_df['image_path'].map(
+            path_to_score)
+        cat_result_df['model'] = model_name
+        all_results.append(cat_result_df)
+
+        # Clean up after each category
+        torch.cuda.empty_cache()
+        gc.collect()
+
+    # Combine all categories into one dataframe
+    results_df = pd.concat(all_results, ignore_index=True)
 
     print(f"\n{model_name} inference complete")
     print(f"Total images: {len(results_df)}")
