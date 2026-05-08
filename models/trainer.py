@@ -756,7 +756,7 @@ def run_inference(
         for batch in tqdm(loader, desc=f"Inference [{model_name}]",
                           dynamic_ncols=True, leave=True):
             images = batch['image'].to(device)
-            output = model(images)
+            output = model.model(images)
             scores = output.pred_score.cpu().numpy().flatten()
             amaps = output.anomaly_map.cpu().numpy()
 
