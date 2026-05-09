@@ -1,7 +1,7 @@
 # Memory, Reconstruction, or Prototypes?
 ## Benchmarking DINOv2-Based Models for Multi-Class Industrial Anomaly Detection
 
-Bachelor thesis — Wirtschaftsinformatik, FAU Erlangen-Nürnberg
+Bachelor thesis - Wirtschaftsinformatik, FAU Erlangen-Nürnberg
 Author: Jeremi Degenhardt
 Supervisor: René Gröbner
 
@@ -52,7 +52,7 @@ BachelorsThesis/
 ## Replication Steps
 
 1. Run `00_setup.ipynb` — download Real-IAD from HuggingFace
-2. Run `00b_mvtec_validation.ipynb` — validate AnomalyDINO on MVTec AD
+2. Run `06_anomalydino_multiclass_validation.ipynb` — validate AnomalyDINO on MVTec AD
 3. Run `02_standard_protocol.ipynb` — main experiment
 4. Run `03_crossview_protocol.ipynb` — cross-view robustness
 5. Run `04_ablation_study.ipynb` — ablation investigations
@@ -78,7 +78,7 @@ Set repo_path, dataset_root, and MAPS_SAVE_DIR before running.
 
 See `requirements.txt` for the full dependency list.
 
-Recommended environment: Google Colab with T4 or L4 GPU.
+Recommended environment: Google Colab with G4 GPU.
 Install dependencies with:
 ```
 pip install -r requirements.txt
