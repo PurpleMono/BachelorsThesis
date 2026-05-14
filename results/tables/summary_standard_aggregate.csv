@@ -1,0 +1,4 @@
+Model,Paradigm,I-AUROC,S-AUROC
+AnomalyDINO,Memory-Based,0.8381,0.9249
+Dinomaly,Reconstruction-Based,0.8599,0.9356
+INP-Former,Prototype-Based,0.873,0.9489

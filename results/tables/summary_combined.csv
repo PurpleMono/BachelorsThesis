@@ -1,0 +1,4 @@
+Model,Paradigm,I-AUROC Std,S-AUROC Std,I-AUROC CV,Degradation (%)
+AnomalyDINO,Memory-Based,0.8381,0.9249,0.7355,12.25
+Dinomaly,Reconstruction-Based,0.8599,0.9356,0.7105,17.38
+INP-Former,Prototype-Based,0.873,0.9489,0.7241,17.05

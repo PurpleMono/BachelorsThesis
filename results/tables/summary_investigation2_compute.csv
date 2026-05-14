@@ -1,0 +1,4 @@
+Model,Config,I-AUROC
+Dinomaly,"Standard (50K iter, ~800K passes)",0.8599
+INP-Former,"Standard (100 epochs, ~3.6M passes)",0.873
+INP-Former,"Equalised (22 epochs, ~800K passes)",0.8623

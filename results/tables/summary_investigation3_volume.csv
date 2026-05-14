@@ -1,0 +1,4 @@
+Config,I-AUROC
+"Standard — 100 epochs, all viewpoints",0.873
+Cross-view — 100 epochs,0.7241
+Cross-view — 250 epochs (compensated),0.7079

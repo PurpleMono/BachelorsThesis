@@ -1,0 +1,5 @@
+Condition,I-AUROC
+"A: Multi-class, Multi-view (Standard)",0.5121
+"B: Single-class, Multi-view",0.8399
+"C: Multi-class, Single-view",0.8514
+"D: Single-class, Single-view",0.852

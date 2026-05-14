@@ -1,0 +1,9 @@
+Code,Defect Type,Description
+AK,Pit,Small surface cavities or indentations
+BX,Deformation,Shape distortion or structural deformation
+CH,Abrasion,Surface wear or scratching from contact
+HS,Scratch,Linear surface marks or grooves
+PS,Damage,General physical damage or breakage
+QS,Missing Parts,Absent components or incomplete assembly
+YW,Foreign Objects,Unwanted material or contamination present
+ZW,Contamination,Surface soiling or chemical contamination

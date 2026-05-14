@@ -1,0 +1,16 @@
+Category,Multi-class I-AUROC,Single-class I-AUROC (mean 3 runs),Difference (MC - SC)
+bottle,65.0,100.0,-35.0
+cable,52.17,95.0,-42.83
+capsule,26.37,95.0,-68.63
+carpet,37.92,99.83,-61.91
+grid,60.74,99.94,-39.2
+hazelnut,65.5,99.89,-34.39
+leather,95.96,100.0,-4.04
+metal_nut,41.1,100.0,-58.9
+pill,41.41,96.81,-55.4
+screw,55.36,84.53,-29.17
+tile,98.85,100.0,-1.15
+toothbrush,78.89,97.78,-18.89
+transistor,41.58,98.78,-57.2
+wood,97.37,100.0,-2.63
+zipper,46.38,99.82,-53.44

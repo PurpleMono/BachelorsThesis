@@ -1,0 +1,32 @@
+Category,Train (Normal),Test (Normal),Test (Anomalous),Defect Types
+Audiojack,1235,2519,1296,4
+Bottle Cap,1230,2154,1631,4
+Button Battery,1210,1640,2150,4
+End Cap,1205,1622,2183,4
+Eraser,1230,2347,1488,4
+Fire Hood,1255,2420,1350,4
+Mint,835,2371,2099,3
+Mounts,1250,2462,1338,3
+Pcb,1235,1486,2289,4
+Phone Battery,1210,2240,1550,4
+Plastic Nut,1255,2509,1246,4
+Plastic Plug,1215,2361,1419,4
+Porcelain Doll,1210,2535,1255,3
+Regulator,1245,2775,1080,4
+Rolled Strip Base,1245,1280,2525,3
+Sim Card Set,1245,1716,2069,3
+Switch,1230,1826,1994,3
+Tape,1250,2407,1443,4
+Terminalblock,1220,1822,2008,3
+Toothbrush,1225,1753,2027,3
+Toy,1250,1585,2190,4
+Toy Brick,1240,2234,1536,4
+Transistor1,1245,1638,2117,3
+U Block,1250,2526,1214,4
+Usb,1230,2066,1754,4
+Usb Adaptor,1155,2340,1520,4
+Vcpill,1260,2295,1470,4
+Wooden Beads,1090,2231,1684,4
+Woodstick,1255,2677,1073,4
+Zipper,1255,1419,2331,4
+Total,36465,63256,51329,3–4

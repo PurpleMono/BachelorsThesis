@@ -1,0 +1,16 @@
+Category,Our Mean,Our Std,Published 672px,Diff vs 672px
+bottle,100.0,Error,99.9,0.1
+cable,95.0,1.04,95.1,-0.1
+capsule,95.0,0.55,95.5,-0.5
+carpet,99.83,0.25,100.0,-0.17
+grid,99.94,0.04,99.7,0.24
+hazelnut,99.89,0.05,100.0,-0.11
+leather,100.0,Error,100.0,0.0
+metal_nut,100.0,Error,100.0,0.0
+pill,96.81,0.66,97.9,-1.09
+screw,84.53,1.84,94.7,-10.17
+tile,100.0,Error,100.0,0.0
+toothbrush,97.78,1.57,98.1,-0.32
+transistor,98.78,0.51,97.6,1.18
+wood,100.0,Error,98.3,1.7
+zipper,99.82,0.16,99.6,0.22

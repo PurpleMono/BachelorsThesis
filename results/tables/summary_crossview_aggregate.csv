@@ -1,0 +1,4 @@
+Model,I-AUROC Standard,I-AUROC Cross-View,S-AUROC Cross-View,Degradation (%)
+AnomalyDINO,0.8381,0.7355,0.78,12.25
+Dinomaly,0.8599,0.7105,0.6087,17.38
+INP-Former,0.873,0.7241,0.6371,17.05
